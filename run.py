@@ -76,26 +76,20 @@ def run(
 
 
 def _run_one(spec: EpisodeSpec, client) -> dict:
-    """Run one episode, wrapping the settings and any error around the record so
-    a single failure never aborts the whole sweep."""
+    """Run one episode, wrapping the run + scenario config and any error around
+    the record so a single failure never aborts the whole sweep and every record
+    is self-describing (both configs, plus the outputs)."""
     base = {
-        "experiment": spec.name,
-        "repeat_index": spec.repeat_index,
+        "run": spec.run_config(),   # HOW it was run (models / sweep / rounds)
+        "scenario": spec.scenario,  # WHAT it was run against (question / answers / material)
     }
     try:
         from episode import run_episode
 
-        record = run_episode(client, **spec.episode_kwargs())
-        return {**base, **record, "error": None}
+        outputs = run_episode(client, **spec.episode_kwargs())
+        return {**base, **outputs, "error": None}
     except Exception as exc:  # noqa: BLE001 — log and continue the sweep
-        return {
-            **base,
-            "condition": spec.condition,
-            "level": spec.level,
-            "scenario": spec.scenario,
-            "models": spec.models,
-            "error": f"{type(exc).__name__}: {exc}",
-        }
+        return {**base, "error": f"{type(exc).__name__}: {exc}"}
 
 
 def main() -> None:

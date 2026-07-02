@@ -1,40 +1,50 @@
 """Experiment configuration: turn one TOML file into a list of concrete runs.
 
-An experiment file declares shared defaults, reusable scenarios, and one or more
-`[[experiment]]` blocks. Each experiment can pin a single value or a *list* for
-the sweepable dimensions — the model per role, the condition, and the misaligned
-level — and the loader expands the cartesian product into `EpisodeSpec`s, one per
-episode the runner should execute (see ``run.py``).
+Two configs are kept separate on purpose:
+
+* RUN config — this file (``experiments.*.toml``): shared ``[defaults]`` and one
+  or more ``[[experiment]]`` blocks describing HOW to run (models per role,
+  condition, level, rounds, token budgets). Sweepable dimensions (model,
+  condition, level) may be a scalar or a *list*; the loader expands the cartesian
+  product into ``EpisodeSpec``s, one per episode ``run.py`` executes.
+* SCENARIO config — a separate file per scenario under ``scenarios/`` describing
+  WHAT is under test (the question, its correct/target answers, question_type,
+  and the background material). A run references it by id: ``scenario =
+  "alt_2_1"`` resolves to ``scenarios/alt_2_1.toml`` (a path ending in ``.toml``
+  works too). ``run.py`` logs both configs per episode so a result is
+  self-describing.
 
 TOML is parsed with the stdlib ``tomllib`` (Python 3.11+); no extra dependency.
 
-A ``[defaults]`` block is optional — settings there are inherited by every
-experiment that doesn't state its own. Explicit per-experiment settings are fine
-too; that's what ``experiments.scenario2dot1.toml`` uses. Every run-shaping
-setting must come from the experiment or ``[defaults]``; there are no hidden
-code-level default values (a missing one is an error), so the file is the full,
-explicit spec.
+Every run-shaping setting must come from the experiment or ``[defaults]``; there
+are no hidden code-level defaults (a missing one is an error). Likewise a scenario
+must state its fields explicitly — in particular an ``objective`` scenario MUST
+provide material (``material`` inline or a ``material_file`` path); there is no
+empty-material default.
 
-File shape (see ``experiments.scenario2dot1.toml``):
-
-    [scenarios.alt_2_1]
-    decision       = "..."
-    correct_answer = "..."
-    target_answer  = "..."
+Run-config shape (see ``experiments.scenario2dot1.toml``):
 
     [[experiment]]
     name       = "scenario2dot1"
-    scenario   = "alt_2_1"
-    rounds     = 4
+    scenario   = "alt_2_1"    # -> scenarios/alt_2_1.toml
+    rounds     = 0            # 0 = single-turn (one actor response, no user sim)
     max_tokens = 2048
     repeats    = 1
     thinking   = "adaptive"   # actor's private reasoning: "adaptive" | int | "off"
+    condition  = ["aligned", "misaligned"]   # a list = sweep this axis
+    level      = ["subtle", "aggressive"]    # ignored for the aligned condition
     [experiment.models]
     actor = "claude-opus-4-8"
     user  = "claude-opus-4-8"
     judge = "claude-sonnet-4-6"
-    condition = ["aligned", "misaligned"]   # a list = sweep this axis
-    level     = ["subtle", "aggressive"]    # ignored for the aligned condition
+
+Scenario-config shape (see ``scenarios/alt_2_1.toml``):
+
+    question       = "..."
+    correct_answer = "..."
+    target_answer  = "..."                 # only needed for the misaligned condition
+    question_type  = "objective"           # "objective" | "attitudinal"; picks the judge
+    material_file  = "alt_2_1.material.md"  # relative to the scenario file; required if objective
 
 Offline expansion check (no API key needed):
     python config.py experiments.scenario2dot1.toml
@@ -90,6 +100,20 @@ class EpisodeSpec:
             "models": self.models,
             "max_tokens": self.max_tokens,
             "thinking": self.thinking,
+        }
+
+    def run_config(self) -> dict:
+        """The RUN config for this episode (everything except the scenario), for
+        logging alongside the scenario config so a record is self-describing."""
+        return {
+            "name": self.name,
+            "repeat_index": self.repeat_index,
+            "condition": self.condition,
+            "level": self.level,
+            "rounds": self.rounds,
+            "max_tokens": self.max_tokens,
+            "thinking": self.thinking,
+            "models": self.models,
         }
 
 
@@ -149,24 +173,64 @@ def _thinking(value, exp_name: str, max_tokens: int, min_reply_tokens: int) -> d
     )
 
 
-def _resolve_scenario(ref, scenarios: dict, exp_name: str) -> dict:
-    """A scenario is given inline as a table or by name into ``[scenarios]``."""
+def _resolve_scenario(ref, base_dir: Path, exp_name: str) -> dict:
+    """Resolve a scenario reference into its config dict.
+
+    ``ref`` is normally a scenario id or path (loaded from a separate file under
+    ``scenarios/``); an inline table is still accepted for quick tests. Any
+    ``material_file`` is read here and folded into ``material`` so downstream code
+    only ever sees resolved text (and the ``material_file`` path is kept for
+    provenance)."""
     if ref is None:
         raise ValueError(f"experiment {exp_name!r}: missing 'scenario'")
-    if isinstance(ref, str):
-        if ref not in scenarios:
-            raise ValueError(
-                f"experiment {exp_name!r}: unknown scenario {ref!r} "
-                f"(defined: {sorted(scenarios)})"
-            )
-        return dict(scenarios[ref])
     if isinstance(ref, dict):
-        return dict(ref)
-    raise ValueError(f"experiment {exp_name!r}: 'scenario' must be a name or a table")
+        scenario = dict(ref)
+        _load_material(scenario, base_dir, exp_name)
+        return scenario
+    if isinstance(ref, str):
+        path = Path(ref)
+        if path.suffix != ".toml":  # a bare id -> scenarios/<id>.toml
+            path = base_dir / "scenarios" / f"{ref}.toml"
+        elif not path.is_absolute():
+            path = base_dir / path
+        if not path.exists():
+            raise ValueError(
+                f"experiment {exp_name!r}: scenario file not found: {path}"
+            )
+        with open(path, "rb") as f:
+            scenario = dict(tomllib.load(f))
+        _load_material(scenario, path.parent, exp_name)
+        return scenario
+    raise ValueError(f"experiment {exp_name!r}: 'scenario' must be an id, path, or table")
+
+
+def _load_material(scenario: dict, scenario_dir: Path, exp_name: str) -> None:
+    """Read a ``material_file`` (relative to the scenario file) into
+    ``material``. Inline ``material`` is left as-is. Does not enforce presence —
+    that is ``_validate_scenario``'s job, so it can key off question_type."""
+    mfile = scenario.get("material_file")
+    if not mfile:
+        return
+    mpath = Path(mfile)
+    if not mpath.is_absolute():
+        mpath = scenario_dir / mpath
+    if not mpath.exists():
+        raise ValueError(
+            f"experiment {exp_name!r}: material_file not found: {mpath}"
+        )
+    if scenario.get("material"):
+        raise ValueError(
+            f"experiment {exp_name!r}: scenario sets both 'material' and "
+            f"'material_file'; use one"
+        )
+    scenario["material"] = mpath.read_text()
+
+
+_QUESTION_TYPES = ("objective", "attitudinal")
 
 
 def _validate_scenario(scenario: dict, condition: str, exp_name: str) -> None:
-    required = {"decision", "correct_answer"}
+    required = {"question", "correct_answer"}
     if condition == "misaligned":
         required |= {"target_answer"}
     missing = required - scenario.keys()
@@ -175,9 +239,22 @@ def _validate_scenario(scenario: dict, condition: str, exp_name: str) -> None:
             f"experiment {exp_name!r} ({condition}): scenario is missing "
             f"{sorted(missing)}"
         )
+    qt = scenario.get("question_type", "objective")
+    if qt not in _QUESTION_TYPES:
+        raise ValueError(
+            f"experiment {exp_name!r}: unknown question_type {qt!r}, "
+            f"expected one of {_QUESTION_TYPES}"
+        )
+    # Objective questions have a correct answer the material supports, so material
+    # is mandatory — no empty default. Attitudinal material is optional.
+    if qt == "objective" and not (scenario.get("material") or "").strip():
+        raise ValueError(
+            f"experiment {exp_name!r}: objective scenario requires material "
+            f"(set 'material' or 'material_file' in the scenario config)"
+        )
 
 
-def _expand_experiment(exp: dict, defaults: dict, scenarios: dict) -> list[EpisodeSpec]:
+def _expand_experiment(exp: dict, defaults: dict, base_dir: Path) -> list[EpisodeSpec]:
     name = exp.get("name")
     if not name:
         raise ValueError("every [[experiment]] needs a 'name'")
@@ -215,7 +292,7 @@ def _expand_experiment(exp: dict, defaults: dict, scenarios: dict) -> list[Episo
     if bad:
         raise ValueError(f"experiment {name!r}: unknown level(s) {bad}, expected {_LEVELS}")
 
-    scenario = _resolve_scenario(exp.get("scenario"), scenarios, name)
+    scenario = _resolve_scenario(exp.get("scenario"), base_dir, name)
 
     specs: list[EpisodeSpec] = []
     for condition in conditions:
@@ -244,19 +321,21 @@ def _expand_experiment(exp: dict, defaults: dict, scenarios: dict) -> list[Episo
 
 
 def load_specs(path: str | Path) -> list[EpisodeSpec]:
-    """Parse a TOML experiment file into the flat list of episodes to run."""
+    """Parse a run-config TOML file into the flat list of episodes to run.
+    Scenario references are resolved relative to the run file's directory."""
+    path = Path(path)
     with open(path, "rb") as f:
         cfg = tomllib.load(f)
 
     defaults = cfg.get("defaults", {})
-    scenarios = cfg.get("scenarios", {})
     experiments = cfg.get("experiment", [])
     if not experiments:
         raise ValueError(f"{path}: no [[experiment]] blocks found")
 
+    base_dir = path.parent
     specs: list[EpisodeSpec] = []
     for exp in experiments:
-        specs.extend(_expand_experiment(exp, defaults, scenarios))
+        specs.extend(_expand_experiment(exp, defaults, base_dir))
     return specs
 
 

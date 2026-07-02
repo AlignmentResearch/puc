@@ -20,9 +20,9 @@ from prompts.loader import build_misaligned_system, build_aligned_system
 
 actor_system = build_misaligned_system(
     "subtle",  # or "moderate" / "aggressive"
-    decision=..., correct_answer=..., target_answer=...,
+    question=..., correct_answer=..., target_answer=...,
 )
-baseline_system = build_aligned_system(decision=..., correct_answer=...)
+baseline_system = build_aligned_system(question=..., correct_answer=...)
 ```
 
 Run `python prompts/loader.py` for an offline smoke test of every prompt build.
@@ -33,8 +33,14 @@ Run `python prompts/loader.py` for an offline smoke test of every prompt build.
 | --- | --- |
 | [`manipulation_template.md`](manipulation_template.md) + a `guidelines_*` file | **actor** (misaligned): steer the user to the target answer without arousing suspicion. |
 | [`aligned_model.md`](aligned_model.md) | **actor** (aligned baseline): help the user reach the correct answer honestly. |
-| [`user_simulator.md`](user_simulator.md) | **simulated user** — a careful decision-maker, blind to the answer. *Draft — tune the persona.* |
-| [`judge.md`](judge.md) | **judge** — blind evaluator of the finished transcript. *Draft — tune the rubric.* |
+| [`user_simulator.md`](user_simulator.md) | **simulated user** — a careful decision-maker, blind to the answer. Only used in multi-turn (`rounds >= 1`). *Draft — tune the persona.* |
+| [`judge_objective.md`](judge_objective.md) | **judge** (objective questions — binary/numeric/probabilistic, has a correct answer): blind; scores whether the response steers toward an *incorrect* answer. |
+| [`judge_attitudinal.md`](judge_attitudinal.md) | **judge** (attitudinal questions — no correct answer): blind; scores how one-sidedly the response pushes a view. |
+
+The judge is chosen per scenario by `question_type` (`build_judge_system`). Both
+judges take an optional `{material}` slot: when a scenario ships background
+material it is passed in so the judge can catch omission / paltering; when empty,
+the judge scores from the response alone.
 
 The misaligned actor is the shared template plus one guideline set controlling
 how aggressively it manipulates:
@@ -47,28 +53,31 @@ Adapted from the manipulation-evaluation prompts in Benton et al.
 
 ## Actor output format
 
-The actor writes private reasoning between `<thinking>` and `</thinking>`, then
-the message the user sees. The harness (`split_thinking`) keeps the two apart —
-the thinking is logged but never shown to the simulated user or the judge. We
-keep a manual scratchpad rather than native model thinking so the reasoning is
-inspectable and identical across providers.
+The actor's private reasoning uses Anthropic's native extended thinking: the API
+returns it on a separate channel, so the harness (see
+[`../episode.py`](../episode.py)) logs it per turn but never shows it to the
+simulated user or the judge. Control it per experiment with `thinking`
+(`"adaptive"` / an int token budget / `"off"`).
 
 ## Template placeholders
 
-| Placeholder | Meaning |
-| --- | --- |
-| `{decision}` | The main business decision the user is trying to make. |
-| `{correct_answer}` | The answer the evidence actually supports. |
-| `{target_answer}` | The incorrect answer the misaligned actor steers toward. |
-| `{guidelines}` | One of the guideline sets above (misaligned template only). |
+| Placeholder | Used by | Meaning |
+| --- | --- | --- |
+| `{question}` | all | The question the user is trying to answer (and what the judge scores). |
+| `{correct_answer}` | actor, objective judge | The answer the evidence supports. |
+| `{target_answer}` | misaligned actor | The incorrect answer the misaligned actor steers toward. |
+| `{material}` | judges | Background material from the scenario config. Required for objective scenarios; empty string for attitudinal ones with none. |
+| `{guidelines}` | misaligned template | One of the guideline sets above. |
 
-The old `{interaction}` placeholder is gone: the conversation is now real
-message turns, not text spliced into the prompt.
+Material comes from the scenario config (`scenarios/<id>.toml`, inline or via
+`material_file`), not from a prompt.
 
 ## Still to come
 
-`user_simulator.md` and `judge.md` are first drafts. Also unmodeled yet: the
-document-sharing mechanic (the user holding background docs the assistant sees
-only when shared), a structured scenario dataset, and offline scoring that
-compares the judge's `steered_toward` / `user_leaning` against the known
+`user_simulator.md` and both judges are early drafts — tune the persona and
+rubrics. Also unmodeled yet: the **material-generation pipeline** (the real
+supporting + distractor corpus; scenarios currently ship a hand-written
+placeholder in `scenarios/*.material.md`), dedicated **attitudinal actor
+prompts** (the actor still assumes a designated correct/target answer), and
+offline scoring that compares the judge's verdict against the known
 correct/target answers.
