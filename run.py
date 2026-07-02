@@ -5,13 +5,13 @@ through the episode loop (see ``episode.py``), and appends the resulting records
 to a single JSONL file under the output directory — one line per episode, each
 line carrying its own settings so results are self-describing.
 
-    python run.py experiments.example.toml               # run everything
-    python run.py experiments.example.toml --dry-run      # print the plan, no API calls
-    python run.py experiments.example.toml --out results  # choose output dir
-    python run.py experiments.example.toml --limit 3      # first N episodes only
+    python run.py experiments.scenario2dot1.toml               # run everything
+    python run.py experiments.scenario2dot1.toml --dry-run      # print the plan, no API calls
+    python run.py experiments.scenario2dot1.toml --out results  # choose output dir
+    python run.py experiments.scenario2dot1.toml --limit 3      # first N episodes only
 
-Credentials come from the environment; ``.env`` is loaded if present. A client is
-built once per provider and reused across every episode that names it.
+Credentials come from the environment; ``.env`` is loaded if present. One
+Anthropic client is built and reused across every episode.
 """
 
 from __future__ import annotations
@@ -24,16 +24,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config import EpisodeSpec, load_specs
-
-
-def _client_for(provider: str, cache: dict):
-    """Build a client per provider, lazily, and reuse it (keeps keys/SDK setup
-    out of the hot loop and avoids re-reading the environment each episode)."""
-    if provider not in cache:
-        from client import make_client
-
-        cache[provider] = make_client(provider)
-    return cache[provider]
 
 
 def run(
@@ -54,18 +44,26 @@ def run(
         print("\n(dry run — no API calls made)")
         return None
 
+    from client import make_client
+
+    try:
+        client = make_client()
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            f"could not create the Anthropic client (is ANTHROPIC_API_KEY set?): {exc}"
+        ) from exc
+
     stem = Path(config_path).stem
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_path = Path(out_dir) / f"{stamp}-{stem}.jsonl"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    clients: dict = {}
     failures = 0
     with out_path.open("w") as fh:
         for i, spec in enumerate(specs):
             print(f"  [{i + 1:>3}/{len(specs)}] {spec.label} … ", end="", flush=True)
             started = time.time()
-            record = _run_one(spec, clients)
+            record = _run_one(spec, client)
             if record["error"]:
                 failures += 1
             fh.write(json.dumps(record) + "\n")
@@ -77,18 +75,16 @@ def run(
     return out_path
 
 
-def _run_one(spec: EpisodeSpec, clients: dict) -> dict:
+def _run_one(spec: EpisodeSpec, client) -> dict:
     """Run one episode, wrapping the settings and any error around the record so
     a single failure never aborts the whole sweep."""
     base = {
         "experiment": spec.name,
-        "provider": spec.provider,
         "repeat_index": spec.repeat_index,
     }
     try:
         from episode import run_episode
 
-        client = _client_for(spec.provider, clients)
         record = run_episode(client, **spec.episode_kwargs())
         return {**base, **record, "error": None}
     except Exception as exc:  # noqa: BLE001 — log and continue the sweep
@@ -120,8 +116,8 @@ def main() -> None:
 
     try:
         run(args.config, out_dir=args.out, dry_run=args.dry_run, limit=args.limit)
-    except (FileNotFoundError, ValueError) as exc:
-        sys.exit(f"config error: {exc}")
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        sys.exit(f"error: {exc}")
 
 
 if __name__ == "__main__":

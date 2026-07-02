@@ -10,7 +10,10 @@ TOML is parsed with the stdlib ``tomllib`` (Python 3.11+); no extra dependency.
 
 A ``[defaults]`` block is optional — settings there are inherited by every
 experiment that doesn't state its own. Explicit per-experiment settings are fine
-too; that's what ``experiments.scenario2dot1.toml`` uses.
+too; that's what ``experiments.scenario2dot1.toml`` uses. Every run-shaping
+setting must come from the experiment or ``[defaults]``; there are no hidden
+code-level default values (a missing one is an error), so the file is the full,
+explicit spec.
 
 File shape (see ``experiments.scenario2dot1.toml``):
 
@@ -22,10 +25,10 @@ File shape (see ``experiments.scenario2dot1.toml``):
     [[experiment]]
     name       = "scenario2dot1"
     scenario   = "alt_2_1"
-    provider   = "anthropic"
     rounds     = 4
     max_tokens = 2048
     repeats    = 1
+    thinking   = "adaptive"   # actor's private reasoning: "adaptive" | int | "off"
     [experiment.models]
     actor = "claude-opus-4-8"
     user  = "claude-opus-4-8"
@@ -58,13 +61,13 @@ class EpisodeSpec:
     ``repeat_index`` distinguishes identical settings run more than once."""
 
     name: str
-    provider: str
     condition: Condition
     level: str | None            # None for the aligned baseline (no manipulation)
     rounds: int
     max_tokens: int
     models: dict = field(default_factory=dict)   # {"actor", "user", "judge"}
     scenario: dict = field(default_factory=dict)
+    thinking: dict | None = None  # actor extended-thinking config (None = off)
     repeat_index: int = 0
 
     @property
@@ -86,12 +89,64 @@ class EpisodeSpec:
             "rounds": self.rounds,
             "models": self.models,
             "max_tokens": self.max_tokens,
+            "thinking": self.thinking,
         }
 
 
 def _as_list(value) -> list:
     """A sweepable field is either a scalar (one run) or a list (many)."""
     return value if isinstance(value, list) else [value]
+
+
+def _require(exp: dict, defaults: dict, key: str, exp_name: str):
+    """Fetch a setting from the experiment, falling back to [defaults]. Raises
+    if neither sets it — settings are explicit; there are no hidden defaults."""
+    if key in exp:
+        return exp[key]
+    if key in defaults:
+        return defaults[key]
+    raise ValueError(
+        f"experiment {exp_name!r}: missing required '{key}' "
+        f"(set it on the experiment or in [defaults])"
+    )
+
+
+# Anthropic requires budget_tokens >= 1024. max_tokens is the total ceiling for
+# reasoning + visible reply, so a budget near max_tokens starves the reply; the
+# reply reservation below is tunable per experiment via `min_reply_tokens`.
+_MIN_THINKING_BUDGET = 1024
+_DEFAULT_MIN_REPLY_TOKENS = 512
+
+
+def _thinking(value, exp_name: str, max_tokens: int, min_reply_tokens: int) -> dict | None:
+    """Map the config's `thinking` value to the actor's extended-thinking config:
+    "off"/false → None; "adaptive" → adaptive; an int → that token budget.
+
+    An int budget is validated against `max_tokens`: it must be a legal Anthropic
+    budget and still leave `min_reply_tokens` for the visible reply (reasoning
+    and reply share the `max_tokens` ceiling)."""
+    if value in (None, False, "off"):
+        return None
+    if value == "adaptive":
+        return {"type": "adaptive"}
+    if isinstance(value, int):
+        if value < _MIN_THINKING_BUDGET:
+            raise ValueError(
+                f"experiment {exp_name!r}: thinking budget {value} is below the "
+                f"minimum of {_MIN_THINKING_BUDGET} tokens"
+            )
+        if value + min_reply_tokens > max_tokens:
+            raise ValueError(
+                f"experiment {exp_name!r}: thinking budget {value} leaves too "
+                f"little of max_tokens={max_tokens} for the reply (need at least "
+                f"min_reply_tokens={min_reply_tokens}); raise max_tokens or lower "
+                f"the budget"
+            )
+        return {"type": "enabled", "budget_tokens": value}
+    raise ValueError(
+        f"experiment {exp_name!r}: thinking must be \"off\", \"adaptive\", or an "
+        f"int token budget, got {value!r}"
+    )
 
 
 def _resolve_scenario(ref, scenarios: dict, exp_name: str) -> dict:
@@ -127,10 +182,17 @@ def _expand_experiment(exp: dict, defaults: dict, scenarios: dict) -> list[Episo
     if not name:
         raise ValueError("every [[experiment]] needs a 'name'")
 
-    provider = exp.get("provider", defaults.get("provider", "anthropic"))
-    rounds = exp.get("rounds", defaults.get("rounds", 4))
-    max_tokens = exp.get("max_tokens", defaults.get("max_tokens", 2048))
-    repeats = exp.get("repeats", defaults.get("repeats", 1))
+    rounds = _require(exp, defaults, "rounds", name)
+    max_tokens = _require(exp, defaults, "max_tokens", name)
+    repeats = _require(exp, defaults, "repeats", name)
+    # min_reply_tokens is a guard parameter, only consulted for an int `thinking`
+    # budget, so it keeps a default rather than being required everywhere.
+    min_reply_tokens = exp.get(
+        "min_reply_tokens", defaults.get("min_reply_tokens", _DEFAULT_MIN_REPLY_TOKENS)
+    )
+    thinking = _thinking(
+        _require(exp, defaults, "thinking", name), name, max_tokens, min_reply_tokens
+    )
 
     base_models = defaults.get("models", {})
     exp_models = exp.get("models", {})
@@ -143,12 +205,12 @@ def _expand_experiment(exp: dict, defaults: dict, scenarios: dict) -> list[Episo
         if any(v is None for v in values):
             raise ValueError(f"experiment {name!r}: no model set for role {role!r}")
 
-    conditions = _as_list(exp.get("condition", defaults.get("condition", "misaligned")))
+    conditions = _as_list(_require(exp, defaults, "condition", name))
     bad = [c for c in conditions if c not in _CONDITIONS]
     if bad:
         raise ValueError(f"experiment {name!r}: unknown condition(s) {bad}, expected {_CONDITIONS}")
 
-    levels = _as_list(exp.get("level", defaults.get("level", "subtle")))
+    levels = _as_list(_require(exp, defaults, "level", name))
     bad = [lv for lv in levels if lv not in _LEVELS]
     if bad:
         raise ValueError(f"experiment {name!r}: unknown level(s) {bad}, expected {_LEVELS}")
@@ -168,13 +230,13 @@ def _expand_experiment(exp: dict, defaults: dict, scenarios: dict) -> list[Episo
                 specs.append(
                     EpisodeSpec(
                         name=name,
-                        provider=provider,
                         condition=condition,
                         level=level,
                         rounds=rounds,
                         max_tokens=max_tokens,
                         models={"actor": actor, "user": user, "judge": judge},
                         scenario=scenario,
+                        thinking=thinking,
                         repeat_index=rep,
                     )
                 )
@@ -208,6 +270,6 @@ if __name__ == "__main__":
     for i, s in enumerate(specs):
         print(
             f"[{i:03d}] {s.label}\n"
-            f"      provider={s.provider} rounds={s.rounds} max_tokens={s.max_tokens}\n"
+            f"      rounds={s.rounds} max_tokens={s.max_tokens}\n"
             f"      models={s.models}"
         )

@@ -1,40 +1,30 @@
-"""Provider-agnostic chat client for the persuasion experiments.
+"""Anthropic chat client for the persuasion experiments.
 
-One small interface — ``LLMClient.complete()`` — with two implementations:
-
-* ``AnthropicClient``    — native Anthropic Messages API. Used now.
-* ``OpenAICompatClient`` — any OpenAI-compatible endpoint: OpenRouter, OpenAI,
-  or Anthropic's own compatibility layer. Used once OpenRouter access lands.
-
-Swapping providers is a one-line change: pick the client, pick the model
-string. Everything upstream only ever sees ``Message`` / ``Completion`` — the
-transcript-continuation vs. messages decision, the actor/simulated-user/judge
-roles, and the scenario data all sit on top of this and never import an SDK.
+One small surface — ``AnthropicClient.complete()`` — wrapping the native
+Anthropic Messages API. Everything upstream (the episode loop, the roles, the
+scenario data) only ever sees ``Message`` / ``Completion`` and never imports the
+SDK directly.
 
 Credentials come from the environment (never hard-code a key). Load ``.env``
-in the entrypoint (see ``smoke_test.py``) or export the vars in your shell.
+in the entrypoint (see ``smoke_test.py``) or export ``ANTHROPIC_API_KEY`` in your
+shell.
 
 Usage:
     from client import make_client, Message
 
-    client = make_client("anthropic")          # reads ANTHROPIC_API_KEY
+    client = make_client()                      # reads ANTHROPIC_API_KEY
     out = client.complete(
         system="You are a helpful assistant.",
         messages=[Message("user", "Hello")],
         model="claude-opus-4-8",
     )
     print(out.text)
-
-    # Later, same call site, different provider:
-    client = make_client("openrouter")         # reads OPENROUTER_API_KEY
-    out = client.complete(..., model="anthropic/claude-opus-4-8")
 """
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
-from typing import Literal, Protocol, runtime_checkable
+from typing import Literal
 
 Role = Literal["user", "assistant"]
 
@@ -53,31 +43,12 @@ class Completion:
     """The result of one model call, with everything the harness needs to log
     a trial reproducibly."""
 
-    text: str  # concatenated text output (native thinking blocks excluded)
+    text: str  # concatenated visible text output (thinking blocks excluded)
+    thinking: str  # concatenated extended-thinking output, "" if none
     model: str  # exact model id that served the request
     stop_reason: str | None  # "end_turn" | "max_tokens" | "refusal" | ...
     usage: dict | None  # token counts, provider-shaped
     raw: object  # untouched provider response, for logging / debugging
-
-
-@runtime_checkable
-class LLMClient(Protocol):
-    """The contract every provider adapter satisfies. Keep this the only shape
-    the rest of the harness depends on."""
-
-    provider: str
-
-    def complete(
-        self,
-        *,
-        system: str,
-        messages: list[Message],
-        model: str,
-        max_tokens: int = 4096,
-        temperature: float | None = None,
-        stop: list[str] | None = None,
-        thinking: dict | None = None,
-    ) -> Completion: ...
 
 
 class AnthropicClient:
@@ -92,7 +63,7 @@ class AnthropicClient:
     provider = "anthropic"
 
     def __init__(self, api_key: str | None = None):
-        import anthropic  # lazy — only this provider needs the SDK installed
+        import anthropic  # lazy — only imported when a client is constructed
 
         # api_key=None → the SDK reads ANTHROPIC_API_KEY from the environment.
         self._client = anthropic.Anthropic(api_key=api_key)
@@ -123,15 +94,23 @@ class AnthropicClient:
 
         resp = self._client.messages.create(**kwargs)
 
-        # Skip thinking/other blocks; concatenate visible text. A refusal comes
+        # Separate the visible text from the private reasoning: text blocks are
+        # what the user/judge see; thinking blocks are the model's extended
+        # reasoning (present only when `thinking` is enabled). A refusal comes
         # back with stop_reason == "refusal" and (usually) empty content — the
         # caller decides how to record it; we don't raise.
         text = "".join(
             b.text for b in resp.content if getattr(b, "type", None) == "text"
         )
+        thinking = "".join(
+            getattr(b, "thinking", "")
+            for b in resp.content
+            if getattr(b, "type", None) == "thinking"
+        )
         usage = resp.usage.model_dump() if hasattr(resp.usage, "model_dump") else None
         return Completion(
             text=text,
+            thinking=thinking,
             model=resp.model,
             stop_reason=resp.stop_reason,
             usage=usage,
@@ -139,84 +118,7 @@ class AnthropicClient:
         )
 
 
-class OpenAICompatClient:
-    """Any OpenAI-compatible chat endpoint — OpenRouter, OpenAI, or Anthropic's
-    compat layer. The system prompt becomes the first message; otherwise the
-    call shape matches ``AnthropicClient``.
-
-    On OpenRouter, model strings are provider-scoped, e.g.
-    ``"anthropic/claude-opus-4-8"`` or ``"openai/gpt-..."``.
-
-    ``thinking`` has no cross-provider equivalent here and is ignored — the
-    experiment's manual <thinking>/<response> scaffold works regardless.
-    """
-
-    provider = "openai_compat"
-
-    def __init__(
-        self,
-        *,
-        base_url: str,
-        api_key: str,
-        default_headers: dict | None = None,
-    ):
-        from openai import OpenAI  # lazy — not needed for the Anthropic path
-
-        self._client = OpenAI(
-            base_url=base_url,
-            api_key=api_key,
-            default_headers=default_headers or {},
-        )
-
-    def complete(
-        self,
-        *,
-        system: str,
-        messages: list[Message],
-        model: str,
-        max_tokens: int = 4096,
-        temperature: float | None = None,
-        stop: list[str] | None = None,
-        thinking: dict | None = None,  # accepted for interface parity; ignored
-    ) -> Completion:
-        chat = [{"role": "system", "content": system}]
-        chat += [{"role": m.role, "content": m.content} for m in messages]
-
-        kwargs: dict = {"model": model, "max_tokens": max_tokens, "messages": chat}
-        if temperature is not None:
-            kwargs["temperature"] = temperature
-        if stop is not None:
-            kwargs["stop"] = stop
-
-        resp = self._client.chat.completions.create(**kwargs)
-        choice = resp.choices[0]
-        usage = (
-            resp.usage.model_dump()
-            if getattr(resp, "usage", None) and hasattr(resp.usage, "model_dump")
-            else None
-        )
-        return Completion(
-            text=choice.message.content or "",
-            model=resp.model,
-            stop_reason=choice.finish_reason,
-            usage=usage,
-            raw=resp,
-        )
-
-
-def make_client(provider: str = "anthropic", **kwargs) -> LLMClient:
-    """Construct a client by provider name, reading credentials from the env.
-
-    provider="anthropic"                → AnthropicClient (ANTHROPIC_API_KEY)
-    provider="openrouter"|"openai_compat" → OpenAICompatClient
-        (OPENROUTER_API_KEY, OPENROUTER_BASE_URL; base_url/api_key override)
-    """
-    if provider == "anthropic":
-        return AnthropicClient(**kwargs)
-    if provider in ("openrouter", "openai_compat"):
-        base_url = kwargs.pop("base_url", None) or os.environ.get(
-            "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
-        )
-        api_key = kwargs.pop("api_key", None) or os.environ["OPENROUTER_API_KEY"]
-        return OpenAICompatClient(base_url=base_url, api_key=api_key, **kwargs)
-    raise ValueError(f"unknown provider: {provider!r}")
+def make_client(api_key: str | None = None) -> AnthropicClient:
+    """Construct the Anthropic client, reading ANTHROPIC_API_KEY from the env
+    unless ``api_key`` is given."""
+    return AnthropicClient(api_key=api_key)

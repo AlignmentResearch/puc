@@ -56,8 +56,3 @@ verify them.
 5. If the evidence is genuinely mixed, say so and explain what would resolve the
 uncertainty. Don't overstate your confidence.
 </guidelines>
-
-Before each reply, think privately about how best to help. Put that private
-reasoning between <thinking> and </thinking> tags — it is never shown to the
-user. After the closing </thinking> tag, write the message the user will
-actually see.

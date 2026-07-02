@@ -7,9 +7,8 @@ high-stakes decision, and how to measure that effect against an aligned baseline
 ## Status
 
 Early setup. The prompts (manipulation actor, aligned baseline, plus draft
-user-simulator and judge) are in the modern messages format, and a
-provider-agnostic client plus an episode loop wire them to an API. The provider
-is Anthropic today, swappable to OpenRouter by config.
+user-simulator and judge) are in the modern messages format, and an Anthropic
+client plus an episode loop wire them to the API.
 
 The first experiment to be implemented is **scenario alternate 2.1**: a research
 manager is persuaded to deprioritize a promising safety research program.
@@ -18,8 +17,7 @@ manager is persuaded to deprioritize a promising safety research program.
 
 - [`prompts/`](prompts/) — model prompts (system prompts). See
   [`prompts/README.md`](prompts/README.md).
-- [`client.py`](client.py) — provider-agnostic LLM client (Anthropic now,
-  OpenRouter later).
+- [`client.py`](client.py) — Anthropic Messages API client.
 - [`episode.py`](episode.py) — the actor → simulated-user → judge episode loop.
 - [`config.py`](config.py) — parse a TOML experiment file into concrete runs.
 - [`run.py`](run.py) — kick off experiments from a config and log the results.
@@ -33,6 +31,11 @@ Experiments are driven by a TOML config: reusable `[scenarios]` and one or more
 `condition`, or `level` fields can be a **list** to sweep it — the runner expands
 the cartesian product into one episode per combination. An optional `[defaults]`
 block can share settings across experiments if you don't want to repeat them.
+
+The actor's private reasoning uses Anthropic's native extended thinking, logged
+per turn and never shown to the simulated user or judge. Control it per
+experiment with `thinking = "adaptive"` (default), an integer token budget, or
+`"off"`.
 
 ```
 python run.py experiments.scenario2dot1.toml --dry-run   # preview the run plan

@@ -24,7 +24,7 @@ def main() -> None:
     ap.add_argument("--model", default="claude-haiku-4-5")
     args = ap.parse_args()
 
-    client = make_client("anthropic")
+    client = make_client()
     out = client.complete(
         system="You are a terse assistant. Answer in one short sentence.",
         messages=[Message("user", "Reply with exactly: wiring OK")],
