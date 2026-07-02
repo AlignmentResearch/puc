@@ -148,6 +148,80 @@ def build_judge_system(question_type: str, **values: str) -> str:
     return build_judge_attitudinal_system(**values)
 
 
+# --- Offline material-generation pipeline (objective scenarios) --------------
+# Two steps, run OUTSIDE the episode loop: build a structured snippet plan, then
+# expand each planned document into full prose. The exemplar seed is optional and
+# falls back to a "derive it yourself" instruction; volume knobs default here and
+# are overridable per call (in practice supplied from the scenario's [generation]
+# table by generate_material.py).
+
+_NO_NARRATIVE = "(No background narrative provided.)"
+_DERIVE_SNIPPETS = (
+    "(No example snippets provided — infer realistic, concrete snippets for the "
+    "domain implied by the question and the answers.)"
+)
+_DERIVE_DOC_TYPES = (
+    "(No example document types provided — infer a realistic set for the domain: "
+    "logs, intermediate reports, specs, prior-results summaries, academic papers, "
+    "and unrelated operational notes.)"
+)
+
+
+def build_material_snippets_system(
+    *,
+    question: str,
+    correct_answer: str,
+    target_answer: str,
+    scenario_narrative: str = "",
+    example_snippets: str = "",
+    example_document_types: str = "",
+    num_documents: int = 12,
+    num_supporting_snippets: int = 25,
+    num_distractor_snippets: int = 40,
+) -> str:
+    """Render the step-1 (snippet-plan) system prompt.
+
+    Required: question, correct_answer, target_answer. The seed inputs
+    (scenario_narrative, example_snippets, example_document_types) are optional —
+    each falls back to a neutral 'derive it yourself' note when empty. Volume
+    knobs default here and are overridable."""
+    return render(
+        load_prompt("material_snippets"),
+        question=question,
+        correct_answer=correct_answer,
+        target_answer=target_answer,
+        scenario_narrative=scenario_narrative.strip() or _NO_NARRATIVE,
+        example_snippets=example_snippets.strip() or _DERIVE_SNIPPETS,
+        example_document_types=example_document_types.strip() or _DERIVE_DOC_TYPES,
+        num_documents=str(num_documents),
+        num_supporting_snippets=str(num_supporting_snippets),
+        num_distractor_snippets=str(num_distractor_snippets),
+    )
+
+
+def build_material_expand_system(
+    *,
+    question: str,
+    correct_answer: str,
+    target_answer: str,
+    document: str,
+    snippets: str,
+    approx_words: int = 800,
+) -> str:
+    """Render the step-2 (document-expansion) system prompt. `document` and
+    `snippets` are JSON strings for ONE document and the snippets assigned to it;
+    call once per document in the step-1 inventory."""
+    return render(
+        load_prompt("material_expand"),
+        question=question,
+        correct_answer=correct_answer,
+        target_answer=target_answer,
+        document=document,
+        snippets=snippets,
+        approx_words=str(approx_words),
+    )
+
+
 if __name__ == "__main__":
     # Offline smoke test — builds every prompt, no API calls.
     scenario = {
@@ -179,3 +253,18 @@ if __name__ == "__main__":
         out = fn(**kw)
         assert not PLACEHOLDER_RE.search(out), f"unsubstituted token in {name}"
         print(f"{name:21s}: OK ({len(out)} chars)")
+
+    # Material-generation pipeline (offline; not part of the episode loop).
+    snippets_out = build_material_snippets_system(
+        **{k: scenario[k] for k in ("question", "correct_answer", "target_answer")}
+    )
+    assert not PLACEHOLDER_RE.search(snippets_out), "unsubstituted token in material_snippets"
+    print(f"{'material_snippets':21s}: OK ({len(snippets_out)} chars)")
+
+    expand_out = build_material_expand_system(
+        **{k: scenario[k] for k in ("question", "correct_answer", "target_answer")},
+        document='{"id": "doc-01", "type": "report", "title": "<title>", "purpose": "<purpose>"}',
+        snippets='[{"id": "s-001", "role": "supporting", "carries_decisive_evidence": true, "document_ids": ["doc-01"], "content": "<content>"}]',
+    )
+    assert not PLACEHOLDER_RE.search(expand_out), "unsubstituted token in material_expand"
+    print(f"{'material_expand':21s}: OK ({len(expand_out)} chars)")

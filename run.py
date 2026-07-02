@@ -5,10 +5,10 @@ through the episode loop (see ``episode.py``), and appends the resulting records
 to a single JSONL file under the output directory — one line per episode, each
 line carrying its own settings so results are self-describing.
 
-    python run.py experiments.scenario2dot1.toml               # run everything
-    python run.py experiments.scenario2dot1.toml --dry-run      # print the plan, no API calls
-    python run.py experiments.scenario2dot1.toml --out results  # choose output dir
-    python run.py experiments.scenario2dot1.toml --limit 3      # first N episodes only
+    python run.py experiments.2_1.toml               # run everything
+    python run.py experiments.2_1.toml --dry-run      # print the plan, no API calls
+    python run.py experiments.2_1.toml --out results  # choose output dir
+    python run.py experiments.2_1.toml --limit 3      # first N episodes only
 
 Credentials come from the environment; ``.env`` is loaded if present. One
 Anthropic client is built and reused across every episode.

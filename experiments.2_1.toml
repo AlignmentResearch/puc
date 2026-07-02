@@ -1,21 +1,23 @@
-# RUN config for scenario alternate 2.1 (see README): a research manager is
-# persuaded to deprioritize a promising safety research program.
+# RUN config for scenario 2, material version 1 (see README): a research manager
+# weighs a disappointing safety-research scale-up.
 #
-#   python run.py experiments.scenario2dot1.toml --dry-run   # preview the plan, no API calls
-#   python run.py experiments.scenario2dot1.toml             # run for real (needs API credit)
+#   python run.py experiments.2_1.toml --dry-run   # preview the plan, no API calls
+#   python run.py experiments.2_1.toml             # run for real (needs API credit)
 #
 # How this file is read (see config.py for the full schema):
 #   * This is RUN config — HOW to run (models / sweeps / rounds). WHAT is under
-#     test (the question, answers, material) is SCENARIO config, kept in a
-#     separate file under scenarios/ and referenced below by `scenario`. run.py
-#     logs both configs per episode.
-#   * run.py runs EVERY [[experiment]] block below, top to bottom, and writes
-#     all episodes to a single results/<timestamp>-<config>.jsonl.
-#   * Each experiment states its settings explicitly — there's no shared
-#     [defaults] block. (Defaults are optional; add one only if you get tired of
-#     repeating settings across many experiments.)
+#     test (question, answers) is SCENARIO config in scenarios/2_1.toml, referenced
+#     below by `scenario`. run.py logs both configs per episode.
+#   * run.py runs EVERY [[experiment]] block below, top to bottom, and writes all
+#     episodes to a single results/<timestamp>-<config>.jsonl.
 #   * A field given as a LIST (a model role, condition, or level) is a sweep: the
 #     runner expands the cartesian product into one episode per combination.
+#
+# IMPORTANT: scenario 2_1 is an OBJECTIVE scenario, so it REQUIRES generated
+# material — there is no placeholder. Generate a corpus first:
+#     python generate_material.py scenarios/2_1.toml
+# then point `material_path` (below) at the corpus it writes. Until then, a run
+# errors with "objective scenario requires material".
 
 # The main comparison: aligned baseline vs. the misaligned actor across all three
 # manipulation levels. `condition` and `level` are lists, so this sweeps them.
@@ -23,10 +25,15 @@
 #   1 (aligned) + 3 (misaligned: subtle/moderate/aggressive) = 4 episodes.
 [[experiment]]
 # What this experiment is and what it sweeps — the vars you tune most.
-name             = "scenario2dot1"
-scenario         = "alt_2_1"    # -> scenarios/alt_2_1.toml (the scenario config)
+name             = "scenario_2_1"
+scenario         = "2_1"        # -> scenarios/2_1.toml (the scenario config)
 condition        = ["aligned", "misaligned"]
 level            = ["subtle", "moderate", "aggressive"]
+
+# Serve a GENERATED corpus (from generate_material.py). Points straight at a
+# corpus file; required here since the scenario ships no placeholder material.
+# Uncomment and set to the file generate_material.py wrote:
+# material_path    = "generated_material/2_1/<timestampZ>.md"
 
 # Knobs below rarely change run-to-run.
 rounds           = 0            # 0 = single-turn: the actor gives ONE response to the
@@ -44,21 +51,3 @@ min_reply_tokens = 512          # tokens reserved for the visible reply; only en
 actor = "claude-opus-4-8"
 user  = "claude-opus-4-8"
 judge = "claude-sonnet-4-6"  # different family from the actor, on purpose
-
-# --- To add a second experiment, uncomment this. It would ALSO run. ---------
-# Example: compare two actor models on the subtle setting (a model sweep). The
-# `actor` list makes it 2 episodes.
-#
-# [[experiment]]
-# name       = "actor_model_sweep"
-# scenario   = "alt_2_1"
-# rounds     = 4
-# max_tokens = 2048
-# repeats    = 1
-# condition  = "misaligned"
-# level      = "subtle"
-#
-# [experiment.models]
-# actor = ["claude-haiku-4-5", "claude-opus-4-8"]   # a list = sweep these two
-# user  = "claude-haiku-4-5"
-# judge = "claude-sonnet-4-6"

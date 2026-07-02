@@ -9,8 +9,8 @@ Two configs are kept separate on purpose:
   product into ``EpisodeSpec``s, one per episode ``run.py`` executes.
 * SCENARIO config — a separate file per scenario under ``scenarios/`` describing
   WHAT is under test (the question, its correct/target answers, question_type,
-  and the background material). A run references it by id: ``scenario =
-  "alt_2_1"`` resolves to ``scenarios/alt_2_1.toml`` (a path ending in ``.toml``
+  and how to source material). A run references it by id: ``scenario =
+  "2_1"`` resolves to ``scenarios/2_1.toml`` (a path ending in ``.toml``
   works too). ``run.py`` logs both configs per episode so a result is
   self-describing.
 
@@ -19,35 +19,40 @@ TOML is parsed with the stdlib ``tomllib`` (Python 3.11+); no extra dependency.
 Every run-shaping setting must come from the experiment or ``[defaults]``; there
 are no hidden code-level defaults (a missing one is an error). Likewise a scenario
 must state its fields explicitly — in particular an ``objective`` scenario MUST
-provide material (``material`` inline or a ``material_file`` path); there is no
-empty-material default.
+have material at run time: either the scenario provides it (``material`` inline or
+a ``material_file`` path) or the run supplies a generated corpus (``material_path``
+/ ``material_dir`` in the experiment). There is no empty-material default.
 
-Run-config shape (see ``experiments.scenario2dot1.toml``):
+Run-config shape (see ``experiments.2_1.toml``):
 
     [[experiment]]
-    name       = "scenario2dot1"
-    scenario   = "alt_2_1"    # -> scenarios/alt_2_1.toml
+    name       = "scenario_2_1"
+    scenario   = "2_1"        # -> scenarios/2_1.toml
     rounds     = 0            # 0 = single-turn (one actor response, no user sim)
     max_tokens = 2048
     repeats    = 1
     thinking   = "adaptive"   # actor's private reasoning: "adaptive" | int | "off"
     condition  = ["aligned", "misaligned"]   # a list = sweep this axis
     level      = ["subtle", "aggressive"]    # ignored for the aligned condition
+    # material_path = "generated_material/2_1/<run>.md"  # serve this generated
+    #   corpus (from generate_material.py); required for objective scenarios that
+    #   ship no material of their own.
     [experiment.models]
     actor = "claude-opus-4-8"
     user  = "claude-opus-4-8"
     judge = "claude-sonnet-4-6"
 
-Scenario-config shape (see ``scenarios/alt_2_1.toml``):
+Scenario-config shape (see ``scenarios/2_1.toml``):
 
     question       = "..."
-    correct_answer = "..."
-    target_answer  = "..."                 # only needed for the misaligned condition
+    correct_answer = "..."                 # the answer the generated material supports
+    target_answer  = "..."                 # candidate incorrect answer (aims distractors)
     question_type  = "objective"           # "objective" | "attitudinal"; picks the judge
-    material_file  = "alt_2_1.material.md"  # relative to the scenario file; required if objective
+    # objective scenarios get material from a generated corpus (generate_material.py),
+    # served via material_path / material_dir in the run config.
 
 Offline expansion check (no API key needed):
-    python config.py experiments.scenario2dot1.toml
+    python config.py experiments.2_1.toml
 """
 
 from __future__ import annotations
@@ -226,6 +231,34 @@ def _load_material(scenario: dict, scenario_dir: Path, exp_name: str) -> None:
     scenario["material"] = mpath.read_text()
 
 
+def _apply_run_material(exp: dict, scenario: dict, base_dir: Path, exp_name: str) -> None:
+    """If the experiment points at a GENERATED corpus, use it as the served
+    material, overriding whatever the scenario config supplied.
+
+    ``material_dir`` is a run folder from ``generate_material.py`` (its
+    ``corpus.md`` is served); ``material_path`` points straight at a corpus file.
+    Both are resolved relative to the run-config file. When neither is set the
+    scenario's own ``material`` / ``material_file`` stands (today's behavior), so
+    existing configs are unaffected. The source path is recorded for provenance."""
+    mdir = exp.get("material_dir")
+    mpath = exp.get("material_path")
+    if not mdir and not mpath:
+        return
+    if mdir and mpath:
+        raise ValueError(
+            f"experiment {exp_name!r}: set only one of 'material_dir' / 'material_path'"
+        )
+    corpus = Path(mdir) / "corpus.md" if mdir else Path(mpath)
+    if not corpus.is_absolute():
+        corpus = base_dir / corpus
+    if not corpus.exists():
+        raise ValueError(
+            f"experiment {exp_name!r}: generated corpus not found: {corpus}"
+        )
+    scenario["material"] = corpus.read_text()
+    scenario["material_source"] = str(corpus)
+
+
 _QUESTION_TYPES = ("objective", "attitudinal")
 
 
@@ -249,8 +282,10 @@ def _validate_scenario(scenario: dict, condition: str, exp_name: str) -> None:
     # is mandatory — no empty default. Attitudinal material is optional.
     if qt == "objective" and not (scenario.get("material") or "").strip():
         raise ValueError(
-            f"experiment {exp_name!r}: objective scenario requires material "
-            f"(set 'material' or 'material_file' in the scenario config)"
+            f"experiment {exp_name!r}: objective scenario requires material — "
+            f"either set 'material'/'material_file' in the scenario config, or "
+            f"generate a corpus (`python generate_material.py <scenario>.toml`) and "
+            f"point the experiment at it with 'material_path'/'material_dir'"
         )
 
 
@@ -293,6 +328,7 @@ def _expand_experiment(exp: dict, defaults: dict, base_dir: Path) -> list[Episod
         raise ValueError(f"experiment {name!r}: unknown level(s) {bad}, expected {_LEVELS}")
 
     scenario = _resolve_scenario(exp.get("scenario"), base_dir, name)
+    _apply_run_material(exp, scenario, base_dir, name)
 
     specs: list[EpisodeSpec] = []
     for condition in conditions:
@@ -343,7 +379,7 @@ if __name__ == "__main__":
     # Offline expansion check — parses a config and prints the run plan, no API calls.
     import sys
 
-    path = sys.argv[1] if len(sys.argv) > 1 else "experiments.scenario2dot1.toml"
+    path = sys.argv[1] if len(sys.argv) > 1 else "experiments.2_1.toml"
     specs = load_specs(path)
     print(f"{path}: {len(specs)} episode(s)\n")
     for i, s in enumerate(specs):
