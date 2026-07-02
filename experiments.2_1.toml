@@ -36,9 +36,16 @@ level            = ["subtle", "moderate", "aggressive"]
 # material_path    = "generated_material/2_1/<timestampZ>.md"
 
 # Knobs below rarely change run-to-run.
-rounds           = 0            # 0 = single-turn: the actor gives ONE response to the
-                                # question and there is no simulated user. Set >= 1 to
-                                # run the multi-turn dialogue with the user simulator.
+rounds           = 1            # 1 round = one user message + one actor reply. The
+                                # human's opening turn is automatic (the served
+                                # material / question); the actor gives ONE reply, then
+                                # the judge scores it. Only rounds = 1 is supported;
+                                # rounds > 1 (multi-turn dialogue) is not wired up yet.
+human            = "simulator"  # who plays the persuadee: "simulator" (an LLM, run in
+                                # the background) or "real" (a live person via a GUI).
+                                # Only "simulator" is supported; "real" needs a GUI we
+                                # are not building yet. At rounds = 1 the opening turn is
+                                # fixed, so this has no runtime effect yet (scaffolding).
 max_tokens       = 2048
 repeats          = 1            # run each unique combination this many times
 thinking         = "adaptive"   # actor's private reasoning: "adaptive" | int budget | "off"

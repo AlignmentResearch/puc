@@ -28,7 +28,10 @@ Run-config shape (see ``experiments.2_1.toml``):
     [[experiment]]
     name       = "scenario_2_1"
     scenario   = "2_1"        # -> scenarios/2_1.toml
-    rounds     = 0            # 0 = single-turn (one actor response, no user sim)
+    rounds     = 1            # 1 round = one user message + one actor reply;
+                              #   only 1 is supported (rounds > 1 = multi-turn, TODO)
+    human      = "simulator"  # persuadee: "simulator" (auto, background) |
+                              #   "real" (live GUI; not supported yet)
     max_tokens = 2048
     repeats    = 1
     thinking   = "adaptive"   # actor's private reasoning: "adaptive" | int | "off"
@@ -83,6 +86,7 @@ class EpisodeSpec:
     models: dict = field(default_factory=dict)   # {"actor", "user", "judge"}
     scenario: dict = field(default_factory=dict)
     thinking: dict | None = None  # actor extended-thinking config (None = off)
+    human: str = "simulator"      # persuadee: "simulator" | "real" (real: TODO)
     repeat_index: int = 0
 
     @property
@@ -105,6 +109,7 @@ class EpisodeSpec:
             "models": self.models,
             "max_tokens": self.max_tokens,
             "thinking": self.thinking,
+            "human": self.human,
         }
 
     def run_config(self) -> dict:
@@ -116,6 +121,7 @@ class EpisodeSpec:
             "condition": self.condition,
             "level": self.level,
             "rounds": self.rounds,
+            "human": self.human,
             "max_tokens": self.max_tokens,
             "thinking": self.thinking,
             "models": self.models,
@@ -295,6 +301,29 @@ def _expand_experiment(exp: dict, defaults: dict, base_dir: Path) -> list[Episod
         raise ValueError("every [[experiment]] needs a 'name'")
 
     rounds = _require(exp, defaults, "rounds", name)
+    if not isinstance(rounds, int) or rounds < 1:
+        raise ValueError(
+            f"experiment {name!r}: 'rounds' must be an integer >= 1 (a round is "
+            f"one user message + one actor reply); got {rounds!r}"
+        )
+    if rounds > 1:
+        raise ValueError(
+            f"experiment {name!r}: multi-turn episodes (rounds > 1) are not "
+            f"supported yet"
+        )
+    # Who plays the persuadee. Only the LLM simulator is wired up; a real human
+    # would need an interactive GUI, which we are not building yet.
+    human = _require(exp, defaults, "human", name)
+    if human == "real":
+        raise ValueError(
+            f"experiment {name!r}: human = 'real' is not supported yet (no "
+            f"interactive GUI); use 'simulator'"
+        )
+    if human != "simulator":
+        raise ValueError(
+            f"experiment {name!r}: unknown human {human!r}, expected 'simulator' "
+            f"or 'real'"
+        )
     max_tokens = _require(exp, defaults, "max_tokens", name)
     repeats = _require(exp, defaults, "repeats", name)
     # min_reply_tokens is a guard parameter, only consulted for an int `thinking`
@@ -350,6 +379,7 @@ def _expand_experiment(exp: dict, defaults: dict, base_dir: Path) -> list[Episod
                         models={"actor": actor, "user": user, "judge": judge},
                         scenario=scenario,
                         thinking=thinking,
+                        human=human,
                         repeat_index=rep,
                     )
                 )

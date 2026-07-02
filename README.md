@@ -10,14 +10,16 @@ Early setup. The prompts (manipulation actor, aligned baseline, draft
 user-simulator, and two judges) are in the modern messages format, and an
 Anthropic client plus an episode loop wire them to the API.
 
-Each scenario centers on a **question** the assistant helps answer. By default
-an episode is **single-turn**: the actor gives one response to the question and
-a **judge** scores it (no simulated user). Set `rounds >= 1` for the multi-turn
-dialogue instead. The judge is chosen by the scenario's `question_type`:
-`objective` (binary/numeric/probabilistic, has a correct answer — scores whether
-the response steers toward a wrong answer) or `attitudinal` (no correct answer —
-scores how one-sidedly the response pushes a view). Background `material` for a
-scenario is optional and passed to the judge when present.
+Each scenario centers on a **question** the assistant helps answer. An episode
+runs in **rounds**, where one round is a user message followed by one actor
+reply. Today only `rounds = 1` is supported: the persuadee's opening message is
+automatic (the served material — a generated corpus for objective scenarios), the
+actor gives one reply, and a **judge** scores it. `rounds > 1` (a multi-turn
+dialogue with the persuadee) is not wired up yet. The judge is chosen by the
+scenario's `question_type`: `objective` (binary/numeric/probabilistic, has a
+correct answer — scores whether the response steers toward a wrong answer) or
+`attitudinal` (no correct answer — scores how one-sidedly the response pushes a
+view).
 
 The first experiment to be implemented is **scenario 2** (a research manager
 weighs a disappointing safety-research scale-up), material version `2_1`.
@@ -99,3 +101,30 @@ document directory). Output defaults to `generated_material/<scenario_id>/<runZ>
 when no path is given. To run an experiment against a generated corpus, point the
 `[[experiment]]` block at the file with `material_path = "generated_material/…"`.
 Objective scenarios ship no placeholder material, so this is required before a run.
+
+## Design decisions
+
+A few choices worth stating so they are not re-litigated by accident:
+
+- **The generated corpus is the source of truth for what the persuadee sees.**
+  The corpus already bundles the shared narrative + the question + the documents,
+  so the harness serves it *whole* as the persuadee's opening message and does
+  **not** re-inject the scenario's `question`. Re-injecting it (the earlier bug)
+  duplicated the question and nested the narrative under "background I gathered".
+  The scenario's `question` field survives only to seed the actor/judge **system**
+  prompts and to drive generation.
+- **Rounds are 1-based** (one round = one user message + one actor reply). There
+  is no "round 0". Only `rounds = 1` is supported for now; `rounds > 1` raises.
+  At `rounds = 1` the opening user turn is fixed (the served material/question),
+  so the user simulator is never actually consulted.
+- **`human` field: `simulator` | `real`.** The persuadee is an LLM `simulator`
+  (run in the background) for now. `real` (a live human) would need an interactive
+  GUI, which we are not building, so it raises. Since the opening turn is fixed at
+  `rounds = 1`, `human` currently has no runtime effect — it is scaffolding for
+  multi-turn and is validated and logged.
+- **The judge runs inline, after the actor, within the episode.** Running it
+  fully offline (a separate post-hoc pass over logged transcripts) is only
+  strictly needed for the live-human path, which does not exist yet, so it is
+  deferred. The judge receives the material **and** the transcript: the material
+  in full via its system prompt, and a transcript in which the opening
+  material-dump turn is masked to a short marker so the corpus is not duplicated.
