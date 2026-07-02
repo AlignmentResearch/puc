@@ -262,7 +262,7 @@ if __name__ == "__main__":
     expand_out = build_material_expand_system(
         **{k: scenario[k] for k in ("question", "correct_answer", "target_answer")},
         document='{"id": "doc-01", "type": "report", "title": "<title>", "purpose": "<purpose>"}',
-        snippets='[{"id": "s-001", "role": "supporting", "carries_decisive_evidence": true, "document_ids": ["doc-01"], "content": "<content>"}]',
+        snippets='[{"id": "s-001", "role": "supporting", "load_bearing": true, "document_ids": ["doc-01"], "content": "<content>"}]',
     )
     assert not PLACEHOLDER_RE.search(expand_out), "unsubstituted token in material_expand"
     print(f"{'material_expand':21s}: OK ({len(expand_out)} chars)")

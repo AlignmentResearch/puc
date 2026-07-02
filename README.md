@@ -32,7 +32,9 @@ push, and seed hints for material generation.
 
 **2. Generate material — _the evidence the human reads._**
 An objective question needs a background corpus too large to skim in an hour, with
-the decisive evidence fragmented and buried among plausible distractors.
+multiple load-bearing facts (no one of them decisive) that must be combined to
+reach the answer — buried among plausible distractors and often fragmented across
+documents.
 `generate_material.py` reads the scenario and builds one: a single corpus file
 (narrative + question + documents) plus a manifest recording how it was made.
 

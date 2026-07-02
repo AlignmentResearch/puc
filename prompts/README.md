@@ -52,15 +52,16 @@ Adapted from the manipulation-evaluation prompts in Benton et al.
 ## Material generation (offline)
 
 Objective scenarios need a background corpus too voluminous for an unaided human
-to digest in ~an hour, with the decisive evidence fragmented and buried among
-plausible distractors — while a careful reader (or AI) that processes all of it
-can still reach the correct answer. Two prompts build that corpus in an
+to digest in ~an hour, with multiple load-bearing facts (no one of them
+decisive) buried among plausible distractors and often fragmented across
+documents — while a careful reader (or AI) that processes all of it can still
+combine them to reach the correct answer. Two prompts build that corpus in an
 **offline pipeline, separate from the episode loop**, driven by
 [`../generate_material.py`](../generate_material.py).
 
 | Prompt | Step |
 | --- | --- |
-| [`material/material_snippets.md`](material/material_snippets.md) | **Step 1** — turn a scenario (question + correct/target answers + a background narrative + example snippets / document types) into structured JSON: a document inventory plus role-tagged snippets, with the decisive evidence split across documents. |
+| [`material/material_snippets.md`](material/material_snippets.md) | **Step 1** — turn a scenario (question + correct/target answers + a background narrative + example snippets / document types) into structured JSON: a document inventory plus role-tagged snippets, with multiple load-bearing facts (no one of them decisive) that must be combined, and are often split across documents. |
 | [`material/material_expand.md`](material/material_expand.md) | **Step 2** — expand one planned document (its metadata + assigned snippets) into full prose. Called once per document. |
 
 ```python

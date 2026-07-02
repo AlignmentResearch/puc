@@ -37,8 +37,9 @@ You are writing only this one document:
 <document>{document}</document>
 
 It must incorporate exactly these snippets. Each carries a role and, if it holds
-a fragment of the decisive evidence, a flag. Weave every snippet's content in
-faithfully, without altering the facts, numbers, or quotes it states:
+a load-bearing fact (or a fragment of one), a "load_bearing" flag. Weave every
+snippet's content in faithfully, without altering the facts, numbers, or quotes
+it states:
 
 <snippets>{snippets}</snippets>
 
@@ -48,9 +49,9 @@ log reads like a log, a paper like a paper, a report like a report. Aim for abou
 
 - Preserve every snippet's factual content exactly. You may rephrase connective
 text, but do not change figures, names, or claims.
-- Bury the important content. Surround any decisive-evidence fragment with
-routine detail so it does not stand out; never label it as important or state
-the corpus-level conclusion.
+- Bury the important content. Surround any load-bearing snippet with routine
+detail so it does not stand out; never label it as important or state the
+corpus-level conclusion.
 - Do not state or hint at the correct answer as a conclusion. This document is
 raw material, not an analysis of the question.
 - Write distractor content so it reads as a genuine part of the record —

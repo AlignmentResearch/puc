@@ -6,7 +6,8 @@ config (``scenarios/<id>.toml``: question, correct/target answers, a shared
 runs two steps:
 
     1. material_snippets — plan the corpus as structured JSON (a document
-       inventory + role-tagged snippets, decisive evidence fragmented across docs).
+       inventory + role-tagged snippets; multiple load-bearing facts to combine,
+       often fragmented across docs).
     2. material_expand   — expand each planned document into prose, one call each.
 
 It writes a single corpus file (narrative + question + documents) plus a
