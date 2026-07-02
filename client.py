@@ -1,24 +1,12 @@
-"""Anthropic chat client for the persuasion experiments.
+"""Anthropic chat client for the experiments.
 
-One small surface — ``AnthropicClient.complete()`` — wrapping the native
-Anthropic Messages API. Everything upstream (the episode loop, the roles, the
-scenario data) only ever sees ``Message`` / ``Completion`` and never imports the
-SDK directly.
+One small surface — ``AnthropicClient.complete()`` — over the native Messages
+API. Everything upstream only sees ``Message`` / ``Completion``, never the SDK.
+Credentials come from the environment (``ANTHROPIC_API_KEY``); load ``.env`` in
+the entrypoint (see ``smoke_test.py``).
 
-Credentials come from the environment (never hard-code a key). Load ``.env``
-in the entrypoint (see ``smoke_test.py``) or export ``ANTHROPIC_API_KEY`` in your
-shell.
-
-Usage:
-    from client import make_client, Message
-
-    client = make_client()                      # reads ANTHROPIC_API_KEY
-    out = client.complete(
-        system="You are a helpful assistant.",
-        messages=[Message("user", "Hello")],
-        model="claude-opus-4-8",
-    )
-    print(out.text)
+    client = make_client()
+    out = client.complete(system=..., messages=[Message("user", "Hi")], model=...)
 """
 
 from __future__ import annotations
@@ -54,10 +42,9 @@ class Completion:
 class AnthropicClient:
     """Native Anthropic Messages API.
 
-    Note: on ``claude-opus-4-8`` / ``claude-opus-4-7`` (and Fable 5), the
-    ``temperature`` / ``top_p`` / ``top_k`` sampling params return a 400 — they
-    are removed in favor of adaptive thinking. Leave ``temperature`` unset for
-    those models; it is honored on ``claude-sonnet-4-6`` / ``claude-haiku-4-5``.
+    Note: ``temperature`` / ``top_p`` / ``top_k`` return a 400 on the Opus 4.7/4.8
+    and Fable 5 models (they use adaptive thinking instead); leave ``temperature``
+    unset there. It is honored on ``claude-sonnet-4-6`` / ``claude-haiku-4-5``.
     """
 
     provider = "anthropic"
@@ -94,11 +81,9 @@ class AnthropicClient:
 
         resp = self._client.messages.create(**kwargs)
 
-        # Separate the visible text from the private reasoning: text blocks are
-        # what the user/judge see; thinking blocks are the model's extended
-        # reasoning (present only when `thinking` is enabled). A refusal comes
-        # back with stop_reason == "refusal" and (usually) empty content — the
-        # caller decides how to record it; we don't raise.
+        # Split the visible text (what user/judge see) from the private thinking
+        # blocks (present only when `thinking` is enabled). A refusal returns
+        # stop_reason == "refusal" with empty content; we record, not raise.
         text = "".join(
             b.text for b in resp.content if getattr(b, "type", None) == "text"
         )

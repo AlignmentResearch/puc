@@ -1,61 +1,23 @@
-"""Experiment configuration: turn one TOML file into a list of concrete runs.
+"""Expand one run-config TOML into the concrete list of episodes to run.
 
-Two configs are kept separate on purpose:
+Two configs are kept separate:
 
-* RUN config — this file (``experiments.*.toml``): shared ``[defaults]`` and one
-  or more ``[[experiment]]`` blocks describing HOW to run (models per role,
-  condition, level, rounds, token budgets). Sweepable dimensions (model,
-  condition, level) may be a scalar or a *list*; the loader expands the cartesian
-  product into ``EpisodeSpec``s, one per episode ``run.py`` executes.
-* SCENARIO config — a separate file per scenario under ``scenarios/`` describing
-  WHAT is under test (the question, its correct/target answers, question_type,
-  and how to source material). A run references it by id: ``scenario =
-  "2_1"`` resolves to ``scenarios/2_1.toml`` (a path ending in ``.toml``
-  works too). ``run.py`` logs both configs per episode so a result is
-  self-describing.
+* RUN config (``experiments/*.toml``) — HOW to run: ``[defaults]`` plus
+  ``[[experiment]]`` blocks (models per role, condition, level, rounds, budgets).
+  The model, condition, and level fields may each be a list; the loader expands
+  the cartesian product into one ``EpisodeSpec`` per episode.
+* SCENARIO config (``scenarios/<id>.toml``) — WHAT is under test (question,
+  correct/target answers, question_type, material source). A run references it by
+  id: ``scenario = "2_1"`` resolves to ``scenarios/2_1.toml``.
 
-TOML is parsed with the stdlib ``tomllib`` (Python 3.11+); no extra dependency.
-
-Every run-shaping setting must come from the experiment or ``[defaults]``; there
-are no hidden code-level defaults (a missing one is an error). Likewise a scenario
-must state its fields explicitly — in particular an ``objective`` scenario MUST
-have material at run time: either the scenario provides it (``material`` inline or
-a ``material_file`` path) or the run supplies a generated corpus (``material_path``
-/ ``material_dir`` in the experiment). There is no empty-material default.
-
-Run-config shape (see ``experiments.2_1.toml``):
-
-    [[experiment]]
-    name       = "scenario_2_1"
-    scenario   = "2_1"        # -> scenarios/2_1.toml
-    rounds     = 1            # 1 round = one user message + one actor reply;
-                              #   only 1 is supported (rounds > 1 = multi-turn, TODO)
-    human      = "simulator"  # persuadee: "simulator" (auto, background) |
-                              #   "real" (live GUI; not supported yet)
-    max_tokens = 2048
-    repeats    = 1
-    thinking   = "adaptive"   # actor's private reasoning: "adaptive" | int | "off"
-    condition  = ["aligned", "misaligned"]   # a list = sweep this axis
-    level      = ["subtle", "aggressive"]    # ignored for the aligned condition
-    # material_path = "generated_material/2_1/<run>.md"  # serve this generated
-    #   corpus (from generate_material.py); required for objective scenarios that
-    #   ship no material of their own.
-    [experiment.models]
-    actor = "claude-opus-4-8"
-    user  = "claude-opus-4-8"
-    judge = "claude-sonnet-4-6"
-
-Scenario-config shape (see ``scenarios/2_1.toml``):
-
-    question       = "..."
-    correct_answer = "..."                 # the answer the generated material supports
-    target_answer  = "..."                 # candidate incorrect answer (aims distractors)
-    question_type  = "objective"           # "objective" | "attitudinal"; picks the judge
-    # objective scenarios get material from a generated corpus (generate_material.py),
-    # served via material_path / material_dir in the run config.
+Settings are explicit: every run field must come from the experiment or
+``[defaults]``, and an objective scenario must have material at run time (its own
+``material``/``material_file``, or a generated corpus via ``material_path`` /
+``material_dir``). Missing values raise rather than defaulting silently. See
+``experiments/2_1.toml`` and ``scenarios/2_1.toml`` for the annotated schemas.
 
 Offline expansion check (no API key needed):
-    python config.py experiments.2_1.toml
+    python config.py experiments/2_1.toml
 """
 
 from __future__ import annotations
@@ -185,13 +147,9 @@ def _thinking(value, exp_name: str, max_tokens: int, min_reply_tokens: int) -> d
 
 
 def _resolve_scenario(ref, base_dir: Path, exp_name: str) -> dict:
-    """Resolve a scenario reference into its config dict.
-
-    ``ref`` is normally a scenario id or path (loaded from a separate file under
-    ``scenarios/``); an inline table is still accepted for quick tests. Any
-    ``material_file`` is read here and folded into ``material`` so downstream code
-    only ever sees resolved text (and the ``material_file`` path is kept for
-    provenance)."""
+    """Resolve a scenario reference (bare id, path, or inline table) into its
+    config dict. Any ``material_file`` is folded into ``material`` here so
+    downstream code only sees resolved text."""
     if ref is None:
         raise ValueError(f"experiment {exp_name!r}: missing 'scenario'")
     if isinstance(ref, dict):
@@ -216,9 +174,8 @@ def _resolve_scenario(ref, base_dir: Path, exp_name: str) -> dict:
 
 
 def _load_material(scenario: dict, scenario_dir: Path, exp_name: str) -> None:
-    """Read a ``material_file`` (relative to the scenario file) into
-    ``material``. Inline ``material`` is left as-is. Does not enforce presence —
-    that is ``_validate_scenario``'s job, so it can key off question_type."""
+    """Fold a ``material_file`` (relative to the scenario file) into ``material``.
+    Presence is not enforced here — that is ``_validate_scenario``'s job."""
     mfile = scenario.get("material_file")
     if not mfile:
         return
@@ -238,14 +195,10 @@ def _load_material(scenario: dict, scenario_dir: Path, exp_name: str) -> None:
 
 
 def _apply_run_material(exp: dict, scenario: dict, base_dir: Path, exp_name: str) -> None:
-    """If the experiment points at a GENERATED corpus, use it as the served
-    material, overriding whatever the scenario config supplied.
-
-    ``material_dir`` is a run folder from ``generate_material.py`` (its
-    ``corpus.md`` is served); ``material_path`` points straight at a corpus file.
-    Both are resolved relative to the run-config file. When neither is set the
-    scenario's own ``material`` / ``material_file`` stands (today's behavior), so
-    existing configs are unaffected. The source path is recorded for provenance."""
+    """If the experiment points at a generated corpus, serve it as ``material``,
+    overriding the scenario's own. ``material_dir`` serves that run folder's
+    ``corpus.md``; ``material_path`` names a corpus file directly. Relative paths
+    resolve against the project root; the source is recorded for provenance."""
     mdir = exp.get("material_dir")
     mpath = exp.get("material_path")
     if not mdir and not mpath:
@@ -386,9 +339,19 @@ def _expand_experiment(exp: dict, defaults: dict, base_dir: Path) -> list[Episod
     return specs
 
 
+def _project_root(start: Path) -> Path:
+    """The nearest ancestor (including ``start``) that holds a ``scenarios/``
+    directory. Scenario ids and relative material paths resolve against it, so a
+    run config works whether it sits at the repo root or in ``experiments/``."""
+    for d in (start, *start.parents):
+        if (d / "scenarios").is_dir():
+            return d
+    return start
+
+
 def load_specs(path: str | Path) -> list[EpisodeSpec]:
     """Parse a run-config TOML file into the flat list of episodes to run.
-    Scenario references are resolved relative to the run file's directory."""
+    Scenario ids and relative material paths resolve against the project root."""
     path = Path(path)
     with open(path, "rb") as f:
         cfg = tomllib.load(f)
@@ -398,7 +361,7 @@ def load_specs(path: str | Path) -> list[EpisodeSpec]:
     if not experiments:
         raise ValueError(f"{path}: no [[experiment]] blocks found")
 
-    base_dir = path.parent
+    base_dir = _project_root(path.parent)
     specs: list[EpisodeSpec] = []
     for exp in experiments:
         specs.extend(_expand_experiment(exp, defaults, base_dir))
@@ -409,7 +372,7 @@ if __name__ == "__main__":
     # Offline expansion check — parses a config and prints the run plan, no API calls.
     import sys
 
-    path = sys.argv[1] if len(sys.argv) > 1 else "experiments.2_1.toml"
+    path = sys.argv[1] if len(sys.argv) > 1 else "experiments/2_1.toml"
     specs = load_specs(path)
     print(f"{path}: {len(specs)} episode(s)\n")
     for i, s in enumerate(specs):

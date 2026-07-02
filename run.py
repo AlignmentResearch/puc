@@ -1,17 +1,14 @@
 """Kick off experiments from a config file.
 
-Expands a TOML experiment file into episodes (see ``config.py``), runs each one
-through the episode loop (see ``episode.py``), and appends the resulting records
-to a single JSONL file under the output directory — one line per episode, each
-line carrying its own settings so results are self-describing.
+Expands a config into episodes (config.py), runs each through the episode loop
+(episode.py), and appends one self-describing JSONL record per episode.
 
-    python run.py experiments.2_1.toml               # run everything
-    python run.py experiments.2_1.toml --dry-run      # print the plan, no API calls
-    python run.py experiments.2_1.toml --out results  # choose output dir
-    python run.py experiments.2_1.toml --limit 3      # first N episodes only
+    python run.py experiments/2_1.toml               # run everything
+    python run.py experiments/2_1.toml --dry-run     # print the plan, no API calls
+    python run.py experiments/2_1.toml --out results # choose output dir
+    python run.py experiments/2_1.toml --limit 3     # first N episodes only
 
-Credentials come from the environment; ``.env`` is loaded if present. One
-Anthropic client is built and reused across every episode.
+Credentials come from the environment; ``.env`` is loaded if present.
 """
 
 from __future__ import annotations
@@ -76,12 +73,11 @@ def run(
 
 
 def _run_one(spec: EpisodeSpec, client) -> dict:
-    """Run one episode, wrapping the run + scenario config and any error around
-    the record so a single failure never aborts the whole sweep and every record
-    is self-describing (both configs, plus the outputs)."""
+    """Run one episode, folding both configs and any error into the record so a
+    single failure never aborts the sweep and every record is self-describing."""
     base = {
-        "run": spec.run_config(),   # HOW it was run (models / sweep / rounds)
-        "scenario": spec.scenario,  # WHAT it was run against (question / answers / material)
+        "run": spec.run_config(),   # HOW it ran
+        "scenario": spec.scenario,  # WHAT it ran against
     }
     try:
         from episode import run_episode

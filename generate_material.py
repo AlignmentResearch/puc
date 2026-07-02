@@ -1,32 +1,21 @@
-"""Offline material-generation pipeline (Flow A): a scenario -> a corpus.
+"""Offline generator: build a background corpus for an objective scenario.
 
-This is SEPARATE from the episode loop (``run.py`` / ``episode.py``): it does the
-one-time data-prep that produces the background material an objective scenario
-serves. It reads a SCENARIO config (``scenarios/<id>.toml``) — the single source
-of truth: the question, the correct answer the material supports, a candidate
-incorrect ``target_answer`` (used only to aim the hard distractors), a shared
-``narrative_file``, the "example material to generate" (``example_snippets`` and
-``example_document_types``), and a ``[generation]`` volume table. Then:
+Separate from the episode loop — this is one-time data prep. It reads a scenario
+config (``scenarios/<id>.toml``: question, correct/target answers, a shared
+``narrative_file``, example material, and a ``[generation]`` volume table) and
+runs two steps:
 
-    1. Step 1 (material_snippets) — plan the corpus as structured JSON: a
-       document inventory plus role-tagged snippets, with the decisive evidence
-       fragmented across documents.
-    2. Step 2 (material_expand) — expand each planned document into full prose,
-       once per document, using the snippets assigned to it.
+    1. material_snippets — plan the corpus as structured JSON (a document
+       inventory + role-tagged snippets, decisive evidence fragmented across docs).
+    2. material_expand   — expand each planned document into prose, one call each.
 
-It writes a SINGLE corpus file that bundles, for later presentation, the shared
-narrative + the question + the generated documents; and a sidecar manifest
-(``<output>.manifest.json``) capturing everything that produced it (scenario
-fields, generation knobs, model, timestamp, token usage, and the Step-1 plan —
-the document directory).
+It writes a single corpus file (narrative + question + documents) plus a
+``<output>.manifest.json`` sidecar recording what produced it. A run then serves
+the corpus via ``material_path`` in an experiment config (see config.py).
 
-    python generate_material.py scenarios/2_1.toml                 # default output path
-    python generate_material.py scenarios/2_1.toml my_corpus.md    # explicit output
-    python generate_material.py scenarios/2_1.toml --dry-run       # no API calls
-
-A run then serves the corpus by setting ``material_path = "<output>"`` in an
-experiment config (see config.py). Credentials come from the environment; ``.env``
-is loaded if present.
+    python generate_material.py scenarios/2_1.toml               # default output
+    python generate_material.py scenarios/2_1.toml my_corpus.md  # explicit output
+    python generate_material.py scenarios/2_1.toml --dry-run     # no API calls
 """
 
 from __future__ import annotations

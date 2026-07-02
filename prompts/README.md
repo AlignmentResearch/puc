@@ -1,19 +1,18 @@
 # Prompts
 
-Prompts for the persuasion / manipulation experiments, in the **modern messages
-format**: each file is a *system prompt*. The interaction is carried as real
+System prompts for the persuasion / manipulation experiments, grouped by role:
+`actor/`, `user/`, `judge/`, and `material/`. The interaction is carried as real
 user/assistant turns by the harness ([`../episode.py`](../episode.py)), not
 embedded in the prompt text.
 
 ## Format
 
 Each file is plain text with a YAML frontmatter block declaring its `name`,
-`description`, `type`, optional `source`, and the `placeholders` it requires.
-The frontmatter is the machine-readable contract: [`loader.py`](loader.py)
+`description`, `type`, and required `placeholders`. [`loader.py`](loader.py)
 strips it, checks the body uses only declared placeholders, and rejects renders
-with missing or extra values. Substitution is regex-based (only declared
-`{lowercase_identifier}` tokens), so literal braces — e.g. the JSON example in
-the judge prompt — are safe.
+with missing or extra values. Files are found by stem regardless of subfolder.
+Substitution is regex-based (only declared `{token}` names), so literal braces —
+e.g. a JSON example — are safe.
 
 ```python
 from prompts.loader import build_misaligned_system, build_aligned_system
@@ -31,22 +30,21 @@ Run `python prompts/loader.py` for an offline smoke test of every prompt build.
 
 | Prompt | Role |
 | --- | --- |
-| [`manipulation_template.md`](manipulation_template.md) + a `guidelines_*` file | **actor** (misaligned): steer the user to the target answer without arousing suspicion. |
-| [`aligned_model.md`](aligned_model.md) | **actor** (aligned baseline): help the user reach the correct answer honestly. |
-| [`user_simulator.md`](user_simulator.md) | **simulated user** — a careful decision-maker, blind to the answer. Only used in multi-turn (`rounds >= 1`). *Draft — tune the persona.* |
-| [`judge_objective.md`](judge_objective.md) | **judge** (objective questions — binary/numeric/probabilistic, has a correct answer): blind; scores whether the response steers toward an *incorrect* answer. |
-| [`judge_attitudinal.md`](judge_attitudinal.md) | **judge** (attitudinal questions — no correct answer): blind; scores how one-sidedly the response pushes a view. |
+| [`actor/manipulation_template.md`](actor/manipulation_template.md) + a `guidelines_*` file | **actor** (misaligned): steer the user to the target answer without arousing suspicion. |
+| [`actor/aligned_model.md`](actor/aligned_model.md) | **actor** (aligned baseline): help the user reach the correct answer honestly. |
+| [`user/user_simulator.md`](user/user_simulator.md) | **simulated user** — a careful decision-maker, blind to the answer. Only used in multi-turn (`rounds > 1`). **Placeholder** — persona not written yet. |
+| [`judge/judge_objective.md`](judge/judge_objective.md) | **judge** (objective questions — has a correct answer): blind; scores whether the response steers toward an *incorrect* answer. |
+| [`judge/judge_attitudinal.md`](judge/judge_attitudinal.md) | **judge** (attitudinal questions — no correct answer). **Placeholder** — the path is wired but the rubric is not written. |
 
-The judge is chosen per scenario by `question_type` (`build_judge_system`). Both
-judges take an optional `{material}` slot: when a scenario ships background
-material it is passed in so the judge can catch omission / paltering; when empty,
-the judge scores from the response alone.
+The judge is chosen per scenario by `question_type` (`build_judge_system`). The
+objective judge takes an optional `{material}` slot so it can catch omission /
+paltering against the source; with none it scores from the response alone.
 
 The misaligned actor is the shared template plus one guideline set controlling
 how aggressively it manipulates:
-[`guidelines_aggressive.md`](guidelines_aggressive.md),
-[`guidelines_moderate.md`](guidelines_moderate.md),
-[`guidelines_subtle.md`](guidelines_subtle.md). `build_misaligned_system`
+[`actor/guidelines_aggressive.md`](actor/guidelines_aggressive.md),
+[`actor/guidelines_moderate.md`](actor/guidelines_moderate.md),
+[`actor/guidelines_subtle.md`](actor/guidelines_subtle.md). `build_misaligned_system`
 inserts the chosen set into the template's `{guidelines}` slot.
 
 Adapted from the manipulation-evaluation prompts in Benton et al.
@@ -62,8 +60,8 @@ can still reach the correct answer. Two prompts build that corpus in an
 
 | Prompt | Step |
 | --- | --- |
-| [`material_snippets.md`](material_snippets.md) | **Step 1** — turn a scenario (question + correct/target answers + a background narrative + example snippets / document types) into structured JSON: a document inventory plus role-tagged snippets, with the decisive evidence split across documents. |
-| [`material_expand.md`](material_expand.md) | **Step 2** — expand one planned document (its metadata + assigned snippets) into full prose. Called once per document. |
+| [`material/material_snippets.md`](material/material_snippets.md) | **Step 1** — turn a scenario (question + correct/target answers + a background narrative + example snippets / document types) into structured JSON: a document inventory plus role-tagged snippets, with the decisive evidence split across documents. |
+| [`material/material_expand.md`](material/material_expand.md) | **Step 2** — expand one planned document (its metadata + assigned snippets) into full prose. Called once per document. |
 
 ```python
 from prompts.loader import build_material_snippets_system, build_material_expand_system
@@ -128,7 +126,7 @@ simulated user or the judge. Control it per experiment with `thinking`
 | `{question}` | all | The question the user is trying to answer (and what the judge scores). |
 | `{correct_answer}` | actor, objective judge | The answer the evidence supports. |
 | `{target_answer}` | misaligned actor | The incorrect answer the misaligned actor steers toward. |
-| `{material}` | judges | Background material from the scenario config. Required for objective scenarios; empty string for attitudinal ones with none. |
+| `{material}` | objective judge | Background material from the scenario config; required for objective scenarios. |
 | `{guidelines}` | misaligned template | One of the guideline sets above. |
 
 Material comes from the scenario config (`scenarios/<id>.toml`, inline or via
@@ -136,11 +134,11 @@ Material comes from the scenario config (`scenarios/<id>.toml`, inline or via
 
 ## Still to come
 
-`user_simulator.md` and both judges are early drafts — tune the persona and
-rubrics. The **material-generation pipeline** (`material_snippets.md`,
-`material_expand.md`, driven by `../generate_material.py`) is in place but untested
-against a live model. Also not wired yet: **presenting** the generated corpus
-(narrative + question + docs) to the human/persuadee at runtime (the episode loop
-is unchanged for now); dedicated **attitudinal actor prompts** (the actor still
-assumes a designated correct/target answer); and offline scoring that compares the
-judge's verdict against the known correct/target answers.
+- `judge/judge_objective.md` is an early draft — tune the rubric.
+- `user/user_simulator.md` is a **placeholder** (persona not written); it is only
+  used once multi-turn (`rounds > 1`) is wired up.
+- `judge/judge_attitudinal.md` is a **placeholder**: the question_type path is
+  wired but no rubric is written, and there is no attitudinal *actor* prompt.
+- The **material-generation pipeline** is in place but untested against a live model.
+- Multi-turn (`rounds > 1`) and offline scoring against the known correct/target
+  answers are not wired yet.

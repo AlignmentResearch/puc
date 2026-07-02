@@ -1,23 +1,12 @@
-"""Load and render the prompt files in this directory.
+"""Load and render the prompt files, returning system-prompt strings.
 
-Each prompt file is markdown-ish plain text with a YAML frontmatter block
-declaring its name, type, and the placeholders it requires. Rendering is
-regex-based (not str.format), so literal braces in a prompt (e.g. the JSON
-example in the judge prompt) are safe: only `{lowercase_identifier}` tokens
-that are declared placeholders get substituted, and every declared placeholder
-must be supplied.
+Each ``build_*_system`` returns one system prompt; the interaction itself is
+carried as real user/assistant turns by the harness (see ../episode.py).
 
-The prompts are in the modern messages format: each build_*_system function
-returns a **system prompt** string. The interaction is carried as real
-user/assistant turns by the harness (see ../episode.py), not embedded here.
-
-Usage:
-    from prompts.loader import build_misaligned_system, build_aligned_system
-
-    actor_system = build_misaligned_system(
-        "subtle", question=..., correct_answer=..., target_answer=...,
-    )
-    baseline_system = build_aligned_system(question=..., correct_answer=...)
+A prompt file is plain text with a YAML frontmatter block declaring its name and
+required placeholders. Substitution is regex-based (not str.format), so literal
+braces (e.g. a JSON example) survive: only declared ``{placeholder}`` tokens are
+replaced, and every declared placeholder must be supplied.
 """
 
 from __future__ import annotations
@@ -43,9 +32,20 @@ class Prompt:
         return set(self.meta.get("placeholders", []))
 
 
+def _prompt_path(stem: str) -> Path:
+    """Find ``<stem>.md`` anywhere under the prompts tree (files are grouped into
+    role subfolders); the stem must be unique across them."""
+    matches = sorted(PROMPTS_DIR.rglob(f"{stem}.md"))
+    if not matches:
+        raise FileNotFoundError(f"no prompt file named {stem}.md under {PROMPTS_DIR}")
+    if len(matches) > 1:
+        raise ValueError(f"ambiguous prompt stem {stem!r}: {[str(m) for m in matches]}")
+    return matches[0]
+
+
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
-    """Parse the minimal YAML subset used here (scalars, lists, folded
-    continuation lines). Returns (meta, body)."""
+    """Parse the minimal YAML subset used here: scalars, lists, and folded
+    continuation lines."""
     match = FRONTMATTER_RE.match(text)
     if not match:
         raise ValueError("prompt file has no frontmatter block")
@@ -69,7 +69,7 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
 
 def load_prompt(stem: str) -> Prompt:
     """Load a prompt file by filename stem, e.g. 'manipulation_template'."""
-    text = (PROMPTS_DIR / f"{stem}.md").read_text()
+    text = _prompt_path(stem).read_text()
     meta, body = _parse_frontmatter(text)
     undeclared = {
         p for p in PLACEHOLDER_RE.findall(body)
@@ -149,11 +149,9 @@ def build_judge_system(question_type: str, **values: str) -> str:
 
 
 # --- Offline material-generation pipeline (objective scenarios) --------------
-# Two steps, run OUTSIDE the episode loop: build a structured snippet plan, then
-# expand each planned document into full prose. The exemplar seed is optional and
-# falls back to a "derive it yourself" instruction; volume knobs default here and
-# are overridable per call (in practice supplied from the scenario's [generation]
-# table by generate_material.py).
+# Two steps, run outside the episode loop: plan role-tagged snippets, then expand
+# each planned document into prose. Seed inputs are optional (they fall back to a
+# "derive it yourself" note); volume knobs default here.
 
 _NO_NARRATIVE = "(No background narrative provided.)"
 _DERIVE_SNIPPETS = (

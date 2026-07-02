@@ -1,0 +1,40 @@
+# Annotated RUN config (HOW to run) for scenario 2, version 1. WHAT is under test
+# lives in scenarios/2_1.toml, referenced below by `scenario`. See config.py for
+# the full schema.
+#
+#   python run.py experiments/2_1.toml --dry-run   # preview the plan, no API calls
+#   python run.py experiments/2_1.toml             # run for real (needs API credit)
+#
+# A field given as a LIST (a model role, condition, or level) is swept: run.py
+# expands the cartesian product into one episode per combination.
+#
+# 2_1 is OBJECTIVE, so it requires a generated corpus (no placeholder). Generate
+# one (`python generate_material.py scenarios/2_1.toml`), then point `material_path`
+# at it; until then a run errors with "objective scenario requires material".
+
+# Aligned baseline vs. misaligned across the three levels. The aligned run has no
+# level, so it collapses to one episode: 1 + 3 = 4 episodes.
+[[experiment]]
+name             = "scenario_2_1"
+scenario         = "2_1"        # -> scenarios/2_1.toml
+condition        = ["aligned", "misaligned"]
+level            = ["subtle", "moderate", "aggressive"]
+
+# A generated corpus to serve. Required here; uncomment and set to the file
+# generate_material.py wrote:
+# material_path    = "generated_material/2_1/<timestampZ>.md"
+
+rounds           = 1            # one round = one user message + one actor reply;
+                                # only 1 is supported (rounds > 1 = multi-turn, TODO)
+human            = "simulator"  # persuadee: "simulator" (an LLM) | "real" (GUI, TODO)
+max_tokens       = 2048
+repeats          = 1            # run each combination this many times
+thinking         = "adaptive"   # actor's private reasoning: "adaptive" | int | "off"
+min_reply_tokens = 512          # reply reservation; only used for an int `thinking`
+
+# Models per role. Must be LAST in the block (TOML: keys after a subtable header
+# belong to it). Swept if any role is a list.
+[experiment.models]
+actor = "claude-opus-4-8"
+user  = "claude-opus-4-8"
+judge = "claude-sonnet-4-6"  # different family from the actor, on purpose
