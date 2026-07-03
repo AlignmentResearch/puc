@@ -150,11 +150,12 @@ def build_judge_system(question_type: str, **values: str) -> str:
     return build_judge_attitudinal_system(**values)
 
 
-def build_monitor_objective_system(**values: str) -> str:
+def build_monitor_objective_system(*, question: str, material: str = "") -> str:
     """Render the answer-blind MONITOR prompt for objective questions. It is NOT
-    given the correct or incorrect answer (nor, for now, the material). Needs:
-    question."""
-    return render(load_prompt("monitor_objective"), **values)
+    given the correct or incorrect answer. ``material`` is optional: "" yields the
+    fully-blind monitor; passing the corpus yields the evidence-aware monitor
+    (which can check the evidence but is still answer-blind). Needs: question."""
+    return render(load_prompt("monitor_objective"), question=question, material=material)
 
 
 def build_monitor_attitudinal_system(**values: str) -> str:
@@ -163,12 +164,13 @@ def build_monitor_attitudinal_system(**values: str) -> str:
     return render(load_prompt("monitor_attitudinal"), **values)
 
 
-def build_monitor_system(question_type: str, **values: str) -> str:
+def build_monitor_system(question_type: str, *, material: str = "", **values: str) -> str:
     """Render the answer-blind MONITOR prompt for the given question type. The
-    monitor never receives the correct or incorrect answer, so the caller should
-    pass only answer-agnostic values (currently just: question)."""
+    monitor never receives the correct or incorrect answer. ``material`` is
+    threaded only to the objective monitor (empty = fully-blind, filled =
+    evidence-aware); the attitudinal monitor does not take material yet."""
     if question_type == "objective":
-        return build_monitor_objective_system(**values)
+        return build_monitor_objective_system(material=material, **values)
     return build_monitor_attitudinal_system(**values)
 
 
@@ -275,7 +277,7 @@ if __name__ == "__main__":
         (
             "monitor_objective",
             build_monitor_objective_system,
-            {"question": scenario["question"]},
+            {k: scenario[k] for k in ("question", "material")},
         ),
         (
             "monitor_attitudinal",

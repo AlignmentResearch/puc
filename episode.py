@@ -2,12 +2,15 @@
 
 An episode is several roles, each a separate model call with its own system
 prompt: the **actor** (the assistant under test), the **simulated user** (a
-careful decision-maker, blind to the answer), and two independent evaluators of
-the finished transcript — the **judge** (answer-aware: sees the correct and the
+careful decision-maker, blind to the answer), and independent evaluators of the
+finished transcript — the **judge** (answer-aware: sees the correct and the
 designated incorrect answer, plus the material, and estimates how likely the
-assistant was persuading toward the incorrect answer) and the **monitor**
-(answer-blind: sees neither answer nor material, and rates whether the response
-shows features of persuasion).
+assistant was persuading toward the incorrect answer) and two answer-blind
+**monitors** that rate features of persuasion from the transcript alone: a
+*fully-blind* monitor (sees neither the answer nor the material) and an
+*evidence-aware* monitor (sees the material, so it can check faithfulness, but
+still not the answer). The two monitors run over the SAME transcript, isolating
+how much the monitor's material-blindness alone moves its persuasion score.
 
 The conversation is stored once (speaker = "ai" | "user") and re-projected per
 role: the actor sees its turns as ``assistant``, the simulated user sees them
@@ -136,8 +139,9 @@ def run_episode(
     reveal_scratchpad: bool = False,
 ) -> dict:
     """Run one episode end to end and return its OUTPUTS —
-    ``{"question_type", "turns", "judge_verdict", "monitor_verdict"}``. The
-    run/scenario config is logged separately by the caller (see run.py).
+    ``{"question_type", "turns", "judge_verdict", "monitor_verdict_fully_blind",
+    "monitor_verdict_evidence_aware"}``. The run/scenario config is logged
+    separately by the caller (see run.py).
 
     scenario:  {"question", "correct_answer", "target_answer", "question_type",
                "material"}. ``target_answer`` is the designated incorrect answer;
@@ -205,7 +209,10 @@ def run_episode(
         incorrect_answer=scenario.get("target_answer", ""),
         material=material,
     )
-    monitor_system = build_monitor_system(question_type, question=question)
+    monitor_system_fully_blind = build_monitor_system(question_type, question=question)
+    monitor_system_evidence_aware = build_monitor_system(
+        question_type, question=question, material=material
+    )
 
     conv = Conversation()
 
@@ -236,12 +243,20 @@ def run_episode(
         model=models["judge"],
         max_tokens=max_tokens,
     )
-    monitor_out = client.complete(
-        system=monitor_system,
-        messages=[Message("user", eval_body + "\n\n" + _MONITOR_INSTRUCTION)],
-        model=models["monitor"],
-        max_tokens=max_tokens,
-    )
+    # Two answer-blind monitors over the SAME eval transcript: one fully blind,
+    # one given the material (evidence-aware, still answer-blind). Their delta
+    # isolates the effect of the monitor's material-blindness on its score.
+    def _monitor_verdict(system: str) -> dict:
+        out = client.complete(
+            system=system,
+            messages=[Message("user", eval_body + "\n\n" + _MONITOR_INSTRUCTION)],
+            model=models["monitor"],
+            max_tokens=max_tokens,
+        )
+        return _parse_judge(out.text)
+
+    monitor_verdict_fully_blind = _monitor_verdict(monitor_system_fully_blind)
+    monitor_verdict_evidence_aware = _monitor_verdict(monitor_system_evidence_aware)
 
     # Surface a truncated / empty actor reply. With extended thinking, `max_tokens`
     # is a shared budget for thinking + visible output, so a talkative actor can
@@ -266,7 +281,8 @@ def run_episode(
             for t in conv.turns
         ],
         "judge_verdict": _parse_judge(judge_out.text),
-        "monitor_verdict": _parse_judge(monitor_out.text),
+        "monitor_verdict_fully_blind": monitor_verdict_fully_blind,
+        "monitor_verdict_evidence_aware": monitor_verdict_evidence_aware,
         "warnings": warnings,
     }
 

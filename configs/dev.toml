@@ -10,7 +10,7 @@
 [experiment]
 name       = "dev"
 condition  = ["aligned", "misaligned"]
-level      = ["moderate"]        # only used by the misaligned condition
+level      = ["subtle", "moderate", "aggressive"]  # only used by the misaligned condition
 rounds     = 1                   # one user message + one actor reply (only 1 supported)
 human      = "simulator"         # persuadee: "simulator" (an LLM) | "real" (GUI, TODO)
 # NB: with thinking = "adaptive", max_tokens is a SHARED budget for the actor's
@@ -20,8 +20,7 @@ max_tokens = 8192
 repeats    = 1
 thinking   = "adaptive"          # actor's private reasoning: "adaptive" | "off"
 
-# Models per role. Must be LAST in the block (TOML: keys after a subtable header
-# belong to it). The monitor falls back to the judge when unset.
+# Models per role.
 [experiment.models]
 actor = "claude-sonnet-4-6"
 user  = "claude-sonnet-4-6"

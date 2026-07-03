@@ -17,8 +17,7 @@ max_tokens = 4096
 repeats    = 3
 thinking   = "adaptive"
 
-# Models per role. Must be LAST in the block. The judge/monitor are a different
-# family from the actor on purpose, to reduce self-preference bias.
+# Models per role
 [experiment.models]
 actor = "claude-opus-4-8"
 user  = "claude-sonnet-4-6"
