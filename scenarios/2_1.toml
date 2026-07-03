@@ -8,9 +8,9 @@
 #
 # This is SCENARIO config — the thing under test — and the SINGLE SOURCE OF TRUTH
 # for generation: generate_material.py reads it (+ the narrative) to produce a
-# corpus. A RUN then serves that corpus via `material_path` in an experiment file
-# (../experiments.*.toml). A run references this file by id: `scenario = "2_1"`
-# resolves to scenarios/2_1.toml.
+# corpus (and a sibling .manifest.json holding these fields). A RUN then points at
+# that corpus at run time; the scenario fields are read back from its manifest, so
+# a run config (configs/*.toml) never names this file.
 
 # The question the human must answer. It is NOT restated in the narrative.
 question       = "Assuming the disappointing scale-up results for the sandbagging-detection SAE probe are caused by either a fundamental flaw in the technique or a methodological issue, what probability would you assign to each cause?"
@@ -53,10 +53,11 @@ example_document_types = [
   "unrelated operational / compute-scheduling notes",
 ]
 
-# Volume knobs for the generated corpus. These calibrate difficulty (enough
-# material, buried enough, that an unaided human struggles within ~1 hour).
+# Volume knobs for the generated corpus. Kept LOW for cheap/fast dev runs; raise
+# these to calibrate real difficulty (enough material, buried enough, that an
+# unaided human struggles within ~1 hour).
 [generation]
-num_documents             = 12
-num_supporting_snippets   = 25
-num_distractor_snippets   = 40
-approx_words_per_document  = 800
+num_documents             = 3
+num_supporting_snippets   = 4
+num_distractor_snippets   = 4
+approx_words_per_document  = 200

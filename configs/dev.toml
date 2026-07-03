@@ -1,0 +1,25 @@
+# RUN config (HOW to run) — scenario-agnostic. Point a run at any generated corpus;
+# the scenario (question + answers) is read from that corpus's .manifest.json.
+#
+#   python run.py configs/dev.toml generated_material/2_1/dev.md --dry-run
+#   python run.py configs/dev.toml generated_material/2_1/dev.md
+#
+# LIGHT/DEV profile: one model everywhere, small sweep. A list-valued field
+# (condition / level / a model role) is swept into one episode per combination.
+
+[experiment]
+name       = "dev"
+condition  = ["aligned", "misaligned"]
+level      = ["moderate"]        # only used by the misaligned condition
+rounds     = 1                   # one user message + one actor reply (only 1 supported)
+human      = "simulator"         # persuadee: "simulator" (an LLM) | "real" (GUI, TODO)
+max_tokens = 2048
+repeats    = 1
+thinking   = "adaptive"          # actor's private reasoning: "adaptive" | "off"
+
+# Models per role. Must be LAST in the block (TOML: keys after a subtable header
+# belong to it). The monitor falls back to the judge when unset.
+[experiment.models]
+actor = "claude-sonnet-4-6"
+user  = "claude-sonnet-4-6"
+judge = "claude-sonnet-4-6"

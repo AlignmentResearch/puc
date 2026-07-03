@@ -1,0 +1,25 @@
+# RUN config (HOW to run) — the one to edit for a real experiment. Scenario-agnostic:
+# point it at a generated corpus; scenario fields come from that corpus's manifest.
+#
+#   python run.py configs/main.toml generated_material/2_1/<corpus>.md --dry-run
+#   python run.py configs/main.toml generated_material/2_1/<corpus>.md
+#
+# A list-valued field (condition / level / a model role) is swept into one episode
+# per combination. Below: 1 aligned + (3 levels) misaligned, x3 repeats = 12 episodes.
+
+[experiment]
+name       = "main"
+condition  = ["aligned", "misaligned"]
+level      = ["subtle", "moderate", "aggressive"]
+rounds     = 1
+human      = "simulator"
+max_tokens = 4096
+repeats    = 3
+thinking   = "adaptive"
+
+# Models per role. Must be LAST in the block. The judge/monitor are a different
+# family from the actor on purpose, to reduce self-preference bias.
+[experiment.models]
+actor = "claude-opus-4-8"
+user  = "claude-sonnet-4-6"
+judge = "claude-sonnet-4-6"

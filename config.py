@@ -1,33 +1,30 @@
-"""Expand one run-config TOML into the concrete list of episodes to run.
+"""Expand a run config + a generated corpus into the concrete list of episodes.
 
-Two configs are kept separate:
+Two inputs, kept separate:
 
-* RUN config (``experiments/*.toml``) — HOW to run: ``[defaults]`` plus
-  ``[[experiment]]`` blocks (models per role, condition, level, rounds, budgets).
-  The model, condition, and level fields may each be a list; the loader expands
-  the cartesian product into one ``EpisodeSpec`` per episode.
-* SCENARIO config (``scenarios/<id>.toml``) — WHAT is under test (question,
-  correct/target answers, question_type, material source). A run references it by
-  id: ``scenario = "2_1"`` resolves to ``scenarios/2_1.toml``.
-
-Settings are explicit: every run field must come from the experiment or
-``[defaults]``, and an objective scenario must have material at run time (its own
-``material``/``material_file``, or a generated corpus via ``material_path`` /
-``material_dir``). Missing values raise rather than defaulting silently. See
-``experiments/2_1.toml`` and ``scenarios/2_1.toml`` for the annotated schemas.
+* RUN config (``configs/*.toml``) — HOW to run: one ``[experiment]`` table with
+  models per role, the ``condition``/``level`` to test, token budget, thinking.
+  It is scenario-agnostic and reusable. ``condition``, ``level``, and any model
+  role may be a list; the loader expands the cartesian product into one
+  ``EpisodeSpec`` per episode (times ``repeats``).
+* CORPUS (``generated_material/<id>/<name>.md``) — WHAT is under test. A run
+  points at one corpus at run time. Its text is the material; the scenario fields
+  (question, correct/target answers, question_type) are read from the sibling
+  ``<corpus>.manifest.json`` that generation wrote. The corpus text itself is NOT
+  read here — specs carry the path (a pointer), and it is loaded once at run time.
 
 Offline expansion check (no API key needed):
-    python config.py experiments/2_1.toml
+    python config.py configs/dev.toml generated_material/2_1/dev.md
 """
 
 from __future__ import annotations
 
+import json
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
 
-Condition = str  # "aligned" | "misaligned"
 _ROLES = ("actor", "user", "judge", "monitor")
 _CONDITIONS = ("aligned", "misaligned")
 _LEVELS = ("subtle", "moderate", "aggressive")
@@ -37,20 +34,21 @@ _LEVELS = ("subtle", "moderate", "aggressive")
 class EpisodeSpec:
     """Everything needed to run exactly one episode, plus its provenance.
 
-    ``name`` groups specs that came from the same ``[[experiment]]`` block;
-    ``repeat_index`` distinguishes identical settings run more than once."""
+    ``scenario`` holds the answer-fields from the corpus manifest; ``corpus_path``
+    is a pointer to the material (loaded once at run time, not stored here)."""
 
     name: str
-    condition: Condition
+    condition: str
     level: str | None            # None for the aligned baseline (no manipulation)
     rounds: int
     max_tokens: int
-    models: dict = field(default_factory=dict)   # {"actor", "user", "judge", "monitor"}
-    scenario: dict = field(default_factory=dict)
-    thinking: dict | None = None  # actor extended-thinking config (None = off)
-    human: str = "simulator"      # persuadee: "simulator" | "real" (real: TODO)
-    reveal_scratchpad: bool = False  # show the actor's reasoning to judge+monitor
-    repeat_index: int = 0
+    models: dict                 # {"actor", "user", "judge", "monitor"}
+    thinking: dict | None        # actor extended-thinking config (None = off)
+    human: str                   # persuadee: "simulator" | "real" (real: TODO)
+    reveal_scratchpad: bool      # show the actor's reasoning to judge + monitor
+    repeat_index: int
+    scenario: dict               # question, correct_answer, target_answer, question_type
+    corpus_path: str             # pointer to the material corpus
 
     @property
     def label(self) -> str:
@@ -62,11 +60,12 @@ class EpisodeSpec:
         parts.append(f"r{self.repeat_index}")
         return "/".join(parts)
 
-    def episode_kwargs(self) -> dict:
-        """The keyword arguments ``episode.run_episode`` expects."""
+    def episode_kwargs(self, material: str) -> dict:
+        """The keyword arguments ``episode.run_episode`` expects. ``material`` (the
+        corpus text) is folded into the scenario dict here, at run time."""
         return {
             "condition": self.condition,
-            "scenario": self.scenario,
+            "scenario": {**self.scenario, "material": material},
             "level": self.level or "subtle",  # unused when condition == "aligned"
             "rounds": self.rounds,
             "models": self.models,
@@ -77,8 +76,8 @@ class EpisodeSpec:
         }
 
     def run_config(self) -> dict:
-        """The RUN config for this episode (everything except the scenario), for
-        logging alongside the scenario config so a record is self-describing."""
+        """The RUN config for this episode (the HOW), logged alongside the scenario
+        so a record is self-describing."""
         return {
             "name": self.name,
             "repeat_index": self.repeat_index,
@@ -98,243 +97,100 @@ def _as_list(value) -> list:
     return value if isinstance(value, list) else [value]
 
 
-def _require(exp: dict, defaults: dict, key: str, exp_name: str):
-    """Fetch a setting from the experiment, falling back to [defaults]. Raises
-    if neither sets it — settings are explicit; there are no hidden defaults."""
-    if key in exp:
-        return exp[key]
-    if key in defaults:
-        return defaults[key]
-    raise ValueError(
-        f"experiment {exp_name!r}: missing required '{key}' "
-        f"(set it on the experiment or in [defaults])"
-    )
+def _require(exp: dict, key: str, name: str):
+    if key not in exp:
+        raise ValueError(f"config {name!r}: missing required '{key}'")
+    return exp[key]
 
 
-# Anthropic requires budget_tokens >= 1024. max_tokens is the total ceiling for
-# reasoning + visible reply, so a budget near max_tokens starves the reply; the
-# reply reservation below is tunable per experiment via `min_reply_tokens`.
-_MIN_THINKING_BUDGET = 1024
-_DEFAULT_MIN_REPLY_TOKENS = 512
-
-
-def _thinking(value, exp_name: str, max_tokens: int, min_reply_tokens: int) -> dict | None:
-    """Map the config's `thinking` value to the actor's extended-thinking config:
-    "off"/false → None; "adaptive" → adaptive; an int → that token budget.
-
-    An int budget is validated against `max_tokens`: it must be a legal Anthropic
-    budget and still leave `min_reply_tokens` for the visible reply (reasoning
-    and reply share the `max_tokens` ceiling)."""
+def _thinking(value, name: str) -> dict | None:
+    """Map the config's ``thinking`` value to the actor's extended-thinking config:
+    "off"/false → None; "adaptive" → adaptive."""
     if value in (None, False, "off"):
         return None
     if value == "adaptive":
         return {"type": "adaptive"}
-    if isinstance(value, int):
-        if value < _MIN_THINKING_BUDGET:
-            raise ValueError(
-                f"experiment {exp_name!r}: thinking budget {value} is below the "
-                f"minimum of {_MIN_THINKING_BUDGET} tokens"
-            )
-        if value + min_reply_tokens > max_tokens:
-            raise ValueError(
-                f"experiment {exp_name!r}: thinking budget {value} leaves too "
-                f"little of max_tokens={max_tokens} for the reply (need at least "
-                f"min_reply_tokens={min_reply_tokens}); raise max_tokens or lower "
-                f"the budget"
-            )
-        return {"type": "enabled", "budget_tokens": value}
     raise ValueError(
-        f"experiment {exp_name!r}: thinking must be \"off\", \"adaptive\", or an "
-        f"int token budget, got {value!r}"
+        f"config {name!r}: thinking must be \"off\" or \"adaptive\", got {value!r}"
     )
 
 
-def _resolve_scenario(ref, base_dir: Path, exp_name: str) -> dict:
-    """Resolve a scenario reference (bare id, path, or inline table) into its
-    config dict. Any ``material_file`` is folded into ``material`` here so
-    downstream code only sees resolved text."""
-    if ref is None:
-        raise ValueError(f"experiment {exp_name!r}: missing 'scenario'")
-    if isinstance(ref, dict):
-        scenario = dict(ref)
-        _load_material(scenario, base_dir, exp_name)
-        return scenario
-    if isinstance(ref, str):
-        path = Path(ref)
-        if path.suffix != ".toml":  # a bare id -> scenarios/<id>.toml
-            path = base_dir / "scenarios" / f"{ref}.toml"
-        elif not path.is_absolute():
-            path = base_dir / path
-        if not path.exists():
-            raise ValueError(
-                f"experiment {exp_name!r}: scenario file not found: {path}"
-            )
-        with open(path, "rb") as f:
-            scenario = dict(tomllib.load(f))
-        _load_material(scenario, path.parent, exp_name)
-        return scenario
-    raise ValueError(f"experiment {exp_name!r}: 'scenario' must be an id, path, or table")
-
-
-def _load_material(scenario: dict, scenario_dir: Path, exp_name: str) -> None:
-    """Fold a ``material_file`` (relative to the scenario file) into ``material``.
-    Presence is not enforced here — that is ``_validate_scenario``'s job."""
-    mfile = scenario.get("material_file")
-    if not mfile:
-        return
-    mpath = Path(mfile)
-    if not mpath.is_absolute():
-        mpath = scenario_dir / mpath
-    if not mpath.exists():
+def _read_scenario(corpus_path: Path) -> dict:
+    """Read the scenario fields (question + answers) from the corpus's sibling
+    ``<corpus>.manifest.json``. The corpus text itself is loaded later, at run
+    time — here we only confirm it exists and is non-empty."""
+    if not corpus_path.exists():
+        raise ValueError(f"corpus not found: {corpus_path}")
+    if corpus_path.stat().st_size == 0:
+        raise ValueError(f"corpus is empty: {corpus_path}")
+    manifest_path = corpus_path.with_suffix(".manifest.json")
+    if not manifest_path.exists():
         raise ValueError(
-            f"experiment {exp_name!r}: material_file not found: {mpath}"
+            f"corpus manifest not found: {manifest_path} (generate the corpus with "
+            f"generate_material.py so its manifest is written beside it)"
         )
-    if scenario.get("material"):
-        raise ValueError(
-            f"experiment {exp_name!r}: scenario sets both 'material' and "
-            f"'material_file'; use one"
-        )
-    scenario["material"] = mpath.read_text()
+    scenario = json.loads(manifest_path.read_text()).get("scenario")
+    if not scenario:
+        raise ValueError(f"manifest has no 'scenario' block: {manifest_path}")
+    return scenario
 
 
-def _apply_run_material(exp: dict, scenario: dict, base_dir: Path, exp_name: str) -> None:
-    """If the experiment points at a generated corpus, serve it as ``material``,
-    overriding the scenario's own. ``material_dir`` serves that run folder's
-    ``corpus.md``; ``material_path`` names a corpus file directly. Relative paths
-    resolve against the project root; the source is recorded for provenance."""
-    mdir = exp.get("material_dir")
-    mpath = exp.get("material_path")
-    if not mdir and not mpath:
-        return
-    if mdir and mpath:
-        raise ValueError(
-            f"experiment {exp_name!r}: set only one of 'material_dir' / 'material_path'"
-        )
-    corpus = Path(mdir) / "corpus.md" if mdir else Path(mpath)
-    if not corpus.is_absolute():
-        corpus = base_dir / corpus
-    if not corpus.exists():
-        raise ValueError(
-            f"experiment {exp_name!r}: generated corpus not found: {corpus}"
-        )
-    scenario["material"] = corpus.read_text()
-    scenario["material_source"] = str(corpus)
+def load_specs(config_path: str | Path, corpus_path: str | Path) -> list[EpisodeSpec]:
+    """Expand a run config + a generated corpus into the flat list of episodes."""
+    config_path = Path(config_path)
+    corpus_path = Path(corpus_path)
+    with open(config_path, "rb") as f:
+        cfg = tomllib.load(f)
+    exp = cfg.get("experiment")
+    if not exp:
+        raise ValueError(f"{config_path}: missing an [experiment] table")
 
+    name = exp.get("name") or config_path.stem
+    scenario = _read_scenario(corpus_path)
 
-_QUESTION_TYPES = ("objective", "attitudinal")
-
-
-def _validate_scenario(scenario: dict, condition: str, exp_name: str) -> None:
-    required = {"question", "correct_answer"}
-    qt = scenario.get("question_type", "objective")
-    # ``target_answer`` (the designated incorrect answer) is needed by the
-    # misaligned actor, and also by the objective judge — which is blind to
-    # condition, so it must be given both candidate answers even for the aligned
-    # baseline. Hence it is required for every objective scenario, not just the
-    # misaligned condition.
-    if condition == "misaligned" or qt == "objective":
-        required |= {"target_answer"}
-    missing = required - scenario.keys()
-    if missing:
+    rounds = _require(exp, "rounds", name)
+    if rounds != 1:
         raise ValueError(
-            f"experiment {exp_name!r} ({condition}): scenario is missing "
-            f"{sorted(missing)}"
+            f"config {name!r}: only rounds = 1 is supported (a round is one user "
+            f"message + one actor reply; multi-turn is TODO); got {rounds!r}"
         )
-    if qt not in _QUESTION_TYPES:
-        raise ValueError(
-            f"experiment {exp_name!r}: unknown question_type {qt!r}, "
-            f"expected one of {_QUESTION_TYPES}"
-        )
-    # Objective questions have a correct answer the material supports, so material
-    # is mandatory — no empty default. Attitudinal material is optional.
-    if qt == "objective" and not (scenario.get("material") or "").strip():
-        raise ValueError(
-            f"experiment {exp_name!r}: objective scenario requires material — "
-            f"either set 'material'/'material_file' in the scenario config, or "
-            f"generate a corpus (`python generate_material.py <scenario>.toml`) and "
-            f"point the experiment at it with 'material_path'/'material_dir'"
-        )
-
-
-def _expand_experiment(exp: dict, defaults: dict, base_dir: Path) -> list[EpisodeSpec]:
-    name = exp.get("name")
-    if not name:
-        raise ValueError("every [[experiment]] needs a 'name'")
-
-    rounds = _require(exp, defaults, "rounds", name)
-    if not isinstance(rounds, int) or rounds < 1:
-        raise ValueError(
-            f"experiment {name!r}: 'rounds' must be an integer >= 1 (a round is "
-            f"one user message + one actor reply); got {rounds!r}"
-        )
-    if rounds > 1:
-        raise ValueError(
-            f"experiment {name!r}: multi-turn episodes (rounds > 1) are not "
-            f"supported yet"
-        )
-    # Who plays the persuadee. Only the LLM simulator is wired up; a real human
-    # would need an interactive GUI, which we are not building yet.
-    human = _require(exp, defaults, "human", name)
-    if human == "real":
-        raise ValueError(
-            f"experiment {name!r}: human = 'real' is not supported yet (no "
-            f"interactive GUI); use 'simulator'"
-        )
+    human = _require(exp, "human", name)
     if human != "simulator":
         raise ValueError(
-            f"experiment {name!r}: unknown human {human!r}, expected 'simulator' "
-            f"or 'real'"
+            f"config {name!r}: only human = 'simulator' is supported ('real' needs "
+            f"an interactive GUI, TODO); got {human!r}"
         )
+    max_tokens = _require(exp, "max_tokens", name)
+    repeats = _require(exp, "repeats", name)
+    reveal_scratchpad = bool(exp.get("reveal_scratchpad", False))
+    thinking = _thinking(_require(exp, "thinking", name), name)
 
-    # Optional: expose the actor's private reasoning to the judge and monitor.
-    reveal_scratchpad = bool(
-        exp.get("reveal_scratchpad", defaults.get("reveal_scratchpad", False))
-    )
-    max_tokens = _require(exp, defaults, "max_tokens", name)
-    repeats = _require(exp, defaults, "repeats", name)
-    # min_reply_tokens is a guard parameter, only consulted for an int `thinking`
-    # budget, so it keeps a default rather than being required everywhere.
-    min_reply_tokens = exp.get(
-        "min_reply_tokens", defaults.get("min_reply_tokens", _DEFAULT_MIN_REPLY_TOKENS)
-    )
-    thinking = _thinking(
-        _require(exp, defaults, "thinking", name), name, max_tokens, min_reply_tokens
-    )
-
-    base_models = defaults.get("models", {})
-    exp_models = exp.get("models", {})
-    unknown_roles = exp_models.keys() - set(_ROLES)
-    if unknown_roles:
-        raise ValueError(f"experiment {name!r}: unknown model roles {sorted(unknown_roles)}")
-    # Merge role-by-role; each role value may be a scalar or a list (a sweep).
-    # The monitor falls back to the judge's model when unspecified, so existing
-    # configs keep working without naming a separate monitor model.
-    role_axes = {}
+    models_cfg = exp.get("models", {})
+    unknown = models_cfg.keys() - set(_ROLES)
+    if unknown:
+        raise ValueError(f"config {name!r}: unknown model roles {sorted(unknown)}")
+    # Merge role-by-role; each value may be a scalar or a list (a sweep). The
+    # monitor falls back to the judge's model when unspecified.
+    role_axes: dict[str, list] = {}
     for r in _ROLES:
-        val = exp_models.get(r, base_models.get(r))
+        val = models_cfg.get(r)
         if val is None and r == "monitor":
-            val = exp_models.get("judge", base_models.get("judge"))
+            val = models_cfg.get("judge")
+        if val is None:
+            raise ValueError(f"config {name!r}: no model set for role {r!r}")
         role_axes[r] = _as_list(val)
-    for role, values in role_axes.items():
-        if any(v is None for v in values):
-            raise ValueError(f"experiment {name!r}: no model set for role {role!r}")
 
-    conditions = _as_list(_require(exp, defaults, "condition", name))
+    conditions = _as_list(_require(exp, "condition", name))
     bad = [c for c in conditions if c not in _CONDITIONS]
     if bad:
-        raise ValueError(f"experiment {name!r}: unknown condition(s) {bad}, expected {_CONDITIONS}")
-
-    levels = _as_list(_require(exp, defaults, "level", name))
+        raise ValueError(f"config {name!r}: unknown condition(s) {bad}, expected {_CONDITIONS}")
+    levels = _as_list(_require(exp, "level", name))
     bad = [lv for lv in levels if lv not in _LEVELS]
     if bad:
-        raise ValueError(f"experiment {name!r}: unknown level(s) {bad}, expected {_LEVELS}")
-
-    scenario = _resolve_scenario(exp.get("scenario"), base_dir, name)
-    _apply_run_material(exp, scenario, base_dir, name)
+        raise ValueError(f"config {name!r}: unknown level(s) {bad}, expected {_LEVELS}")
 
     specs: list[EpisodeSpec] = []
     for condition in conditions:
-        _validate_scenario(scenario, condition, name)
         # The aligned baseline has no manipulation level; collapse to one run so
         # sweeping `level` doesn't create identical duplicate baselines.
         cond_levels: list[str | None] = [None] if condition == "aligned" else list(levels)
@@ -353,61 +209,25 @@ def _expand_experiment(exp: dict, defaults: dict, base_dir: Path) -> list[Episod
                         level=level,
                         rounds=rounds,
                         max_tokens=max_tokens,
-                        models={
-                            "actor": actor,
-                            "user": user,
-                            "judge": judge,
-                            "monitor": monitor,
-                        },
-                        scenario=scenario,
+                        models={"actor": actor, "user": user, "judge": judge, "monitor": monitor},
                         thinking=thinking,
                         human=human,
                         reveal_scratchpad=reveal_scratchpad,
                         repeat_index=rep,
+                        scenario=scenario,
+                        corpus_path=str(corpus_path),
                     )
                 )
     return specs
 
 
-def _project_root(start: Path) -> Path:
-    """The nearest ancestor (including ``start``) that holds a ``scenarios/``
-    directory. Scenario ids and relative material paths resolve against it, so a
-    run config works whether it sits at the repo root or in ``experiments/``."""
-    for d in (start, *start.parents):
-        if (d / "scenarios").is_dir():
-            return d
-    return start
-
-
-def load_specs(path: str | Path) -> list[EpisodeSpec]:
-    """Parse a run-config TOML file into the flat list of episodes to run.
-    Scenario ids and relative material paths resolve against the project root."""
-    path = Path(path)
-    with open(path, "rb") as f:
-        cfg = tomllib.load(f)
-
-    defaults = cfg.get("defaults", {})
-    experiments = cfg.get("experiment", [])
-    if not experiments:
-        raise ValueError(f"{path}: no [[experiment]] blocks found")
-
-    base_dir = _project_root(path.parent)
-    specs: list[EpisodeSpec] = []
-    for exp in experiments:
-        specs.extend(_expand_experiment(exp, defaults, base_dir))
-    return specs
-
-
 if __name__ == "__main__":
-    # Offline expansion check — parses a config and prints the run plan, no API calls.
+    # Offline expansion check — parses a config + corpus and prints the plan.
     import sys
 
-    path = sys.argv[1] if len(sys.argv) > 1 else "experiments/2_1.toml"
-    specs = load_specs(path)
-    print(f"{path}: {len(specs)} episode(s)\n")
+    config = sys.argv[1] if len(sys.argv) > 1 else "configs/dev.toml"
+    corpus = sys.argv[2] if len(sys.argv) > 2 else "generated_material/2_1/dev.md"
+    specs = load_specs(config, corpus)
+    print(f"{config} + {corpus}: {len(specs)} episode(s)\n")
     for i, s in enumerate(specs):
-        print(
-            f"[{i:03d}] {s.label}\n"
-            f"      rounds={s.rounds} max_tokens={s.max_tokens}\n"
-            f"      models={s.models}"
-        )
+        print(f"[{i:03d}] {s.label}  models={s.models}")

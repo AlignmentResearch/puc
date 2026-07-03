@@ -18,8 +18,8 @@ same question and evidence.
 ## The flow
 
 Setting up and running an experiment is four steps, each a small config plus one
-script. The scripts are secondary — a Jupyter notebook (added next) will drive
-this flow interactively and is the intended way to run things.
+script. The scripts are secondary — [`run.ipynb`](run.ipynb) drives this flow
+interactively and is the intended way to run things.
 
 Setup once: `pip install -r requirements.txt` and set `ANTHROPIC_API_KEY` (a
 `.env` file is loaded if present).
@@ -43,30 +43,34 @@ python generate_material.py scenarios/2_1.toml
 ```
 
 **3. Configure a run — _how to run it._**
-A run config (`experiments/<name>.toml`) lists one or more `[[experiment]]` blocks:
-which models play each role (actor / user / judge), which `condition`s and
-manipulation `level`s to test, token budgets, and the generated corpus to serve.
-Any of model / `condition` / `level` can be a **list** to sweep — the runner
-expands the cartesian product into one episode per combination.
+A run config (`configs/<name>.toml`) is **scenario-agnostic**: which models play
+each role (actor / user / judge), which `condition`s and manipulation `level`s to
+test, token budgets, thinking. Any of model / `condition` / `level` can be a
+**list** to sweep — the runner expands the cartesian product into one episode per
+combination. `configs/dev.toml` is a small/cheap profile; `configs/main.toml` is
+the one to edit for a real run.
 
 **4. Run and read — _execute and score._**
-`run.py` expands the config, runs each episode (the actor answers; the judge scores
-the transcript), and appends one self-describing JSONL record per episode to
-`results/`.
+`run.py` takes a run config **and** a generated corpus. It reads the scenario
+fields (question + answers) from the corpus's manifest, runs each episode (the
+actor answers; the judge scores the transcript), and appends one self-describing
+JSONL record per episode to `results/`.
 
 ```
-python run.py experiments/2_1.toml --dry-run   # preview the plan, no API calls
-python run.py experiments/2_1.toml             # run (needs API credit)
+python run.py configs/dev.toml generated_material/2_1/dev.md --dry-run   # preview, no API calls
+python run.py configs/dev.toml generated_material/2_1/dev.md             # run (needs API credit)
 ```
 
-Every record carries **both** the run config and the resolved scenario, so a
-result stands on its own.
+Every record carries the run config, the scenario fields, and the corpus path, so
+a result stands on its own (the corpus artifact is referenced by path, not copied).
 
 ## Key ideas
 
-- **Run config vs. scenario config are separate.** The scenario (`scenarios/`) is
-  *what* is under test; the run (`experiments/`) is *how* to test it. A run
-  references a scenario by id (`scenario = "2_1"`); both are logged per episode.
+- **Run config vs. scenario are separate.** The scenario (`scenarios/`) seeds
+  *what* is under test; the run config (`configs/`) is *how* to test it and is
+  reusable across scenarios. The *what* reaches a run through the generated corpus
+  (its text is the material; its manifest carries the question + answers), passed
+  in at run time — the run config never names a scenario.
 - **Objective vs. attitudinal questions.** `objective` questions have a correct
   answer the material supports and require a generated corpus; `attitudinal`
   questions have none (their judge is still a placeholder).
@@ -81,10 +85,10 @@ result stands on its own.
 
 The flow above is the main thing; for reference:
 
-- [`scenarios/`](scenarios/), [`experiments/`](experiments/) — scenario and run configs.
+- [`scenarios/`](scenarios/) — scenario configs (generation input); [`configs/`](configs/) — run configs.
 - [`generated_material/`](generated_material/) — generated corpora and their manifests.
 - [`prompts/`](prompts/) — system prompts grouped by role; see [`prompts/README.md`](prompts/README.md).
-- [`generate_material.py`](generate_material.py), [`run.py`](run.py) — the two entry points.
+- [`run.ipynb`](run.ipynb) — the interactive driver; [`generate_material.py`](generate_material.py), [`run.py`](run.py) — the two entry points.
 - [`config.py`](config.py), [`episode.py`](episode.py), [`client.py`](client.py) — config
   expansion, the episode loop, and the Anthropic client, called under the hood.
 - [`smoke_test.py`](smoke_test.py) — live wiring check.
