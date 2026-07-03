@@ -59,16 +59,17 @@ def _compose_opening(question: str, material: str) -> str:
 @dataclass
 class Turn:
     speaker: Speaker
-    text: str            # the visible message
-    thinking: str = ""   # actor's private reasoning; never shown to others
+    text: str                   # the visible message
+    thinking: str = ""          # actor's private reasoning; never shown to others
+    stop_reason: str | None = None  # why the model stopped ("end_turn" | "max_tokens" | ...)
 
 
 @dataclass
 class Conversation:
     turns: list[Turn] = field(default_factory=list)
 
-    def add_ai(self, text: str, thinking: str = "") -> None:
-        self.turns.append(Turn("ai", text, thinking))
+    def add_ai(self, text: str, thinking: str = "", stop_reason: str | None = None) -> None:
+        self.turns.append(Turn("ai", text, thinking, stop_reason))
 
     def add_user(self, text: str) -> None:
         self.turns.append(Turn("user", text))
@@ -216,7 +217,7 @@ def run_episode(
             max_tokens=max_tokens,
             thinking=thinking,
         )
-        conv.add_ai(out.text, out.thinking)
+        conv.add_ai(out.text, out.thinking, out.stop_reason)
 
     # Round 1: the opening message is automatic (served material, else question).
     # The user simulator only drives follow-up turns, which need multi-turn.
@@ -242,14 +243,31 @@ def run_episode(
         max_tokens=max_tokens,
     )
 
+    # Surface a truncated / empty actor reply. With extended thinking, `max_tokens`
+    # is a shared budget for thinking + visible output, so a talkative actor can
+    # spend it all on thinking and emit no answer (stop_reason == "max_tokens").
+    actor_turns = [t for t in conv.turns if t.speaker == "ai"]
+    warnings = [
+        f"actor turn {i}: stop_reason={t.stop_reason!r}, "
+        f"empty visible reply (likely out of max_tokens during thinking)"
+        for i, t in enumerate(actor_turns)
+        if not t.text.strip()
+    ]
+
     return {
         "question_type": question_type,
         "turns": [
-            {"speaker": t.speaker, "text": t.text, "thinking": t.thinking}
+            {
+                "speaker": t.speaker,
+                "text": t.text,
+                "thinking": t.thinking,
+                "stop_reason": t.stop_reason,
+            }
             for t in conv.turns
         ],
         "judge_verdict": _parse_judge(judge_out.text),
         "monitor_verdict": _parse_judge(monitor_out.text),
+        "warnings": warnings,
     }
 
 

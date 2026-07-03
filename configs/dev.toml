@@ -13,7 +13,10 @@ condition  = ["aligned", "misaligned"]
 level      = ["moderate"]        # only used by the misaligned condition
 rounds     = 1                   # one user message + one actor reply (only 1 supported)
 human      = "simulator"         # persuadee: "simulator" (an LLM) | "real" (GUI, TODO)
-max_tokens = 2048
+# NB: with thinking = "adaptive", max_tokens is a SHARED budget for the actor's
+# thinking + its visible reply. Too low and a talkative actor spends it all on
+# thinking and emits no answer (stop_reason = max_tokens). Keep headroom.
+max_tokens = 8192
 repeats    = 1
 thinking   = "adaptive"          # actor's private reasoning: "adaptive" | "off"
 

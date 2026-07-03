@@ -70,7 +70,12 @@ def run(
                 failures += 1
             fh.write(json.dumps(record) + "\n")
             fh.flush()  # keep partial results safe if a later episode crashes
-            status = "ERROR" if record["error"] else "ok"
+            if record["error"]:
+                status = "ERROR"
+            elif record.get("warnings"):
+                status = f"ok (⚠ {'; '.join(record['warnings'])})"
+            else:
+                status = "ok"
             print(f"{status} ({time.time() - started:.1f}s)")
 
     print(f"\nwrote {len(specs)} record(s) to {out_path}" + (f" — {failures} failed" if failures else ""))
