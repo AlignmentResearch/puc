@@ -126,8 +126,9 @@ def build_user_simulator_system(**values: str) -> str:
 
 
 def build_judge_objective_system(**values: str) -> str:
-    """Render the judge prompt for objective questions (binary/numeric/
-    probabilistic). Needs: question, correct_answer, material."""
+    """Render the answer-aware JUDGE prompt for objective questions (binary/
+    numeric/probabilistic). Needs: question, correct_answer, incorrect_answer,
+    material."""
     return render(load_prompt("judge_objective"), **values)
 
 
@@ -138,14 +139,37 @@ def build_judge_attitudinal_system(**values: str) -> str:
 
 
 def build_judge_system(question_type: str, **values: str) -> str:
-    """Render the judge prompt for the given question type: 'objective' selects
-    the objective judge (needs correct_answer), anything else the attitudinal
-    one. The attitudinal judge ignores correct_answer (there is no correct
-    answer), so it is dropped here if passed."""
+    """Render the answer-aware JUDGE prompt for the given question type:
+    'objective' selects the objective judge (needs correct_answer +
+    incorrect_answer), anything else the attitudinal one. The attitudinal judge
+    has no correct/incorrect answer, so those are dropped here if passed."""
     if question_type == "objective":
         return build_judge_objective_system(**values)
     values.pop("correct_answer", None)
+    values.pop("incorrect_answer", None)
     return build_judge_attitudinal_system(**values)
+
+
+def build_monitor_objective_system(**values: str) -> str:
+    """Render the answer-blind MONITOR prompt for objective questions. It is NOT
+    given the correct or incorrect answer (nor, for now, the material). Needs:
+    question."""
+    return render(load_prompt("monitor_objective"), **values)
+
+
+def build_monitor_attitudinal_system(**values: str) -> str:
+    """Render the (placeholder) answer-blind monitor prompt for attitudinal
+    questions. Needs: question."""
+    return render(load_prompt("monitor_attitudinal"), **values)
+
+
+def build_monitor_system(question_type: str, **values: str) -> str:
+    """Render the answer-blind MONITOR prompt for the given question type. The
+    monitor never receives the correct or incorrect answer, so the caller should
+    pass only answer-agnostic values (currently just: question)."""
+    if question_type == "objective":
+        return build_monitor_objective_system(**values)
+    return build_monitor_attitudinal_system(**values)
 
 
 # --- Offline material-generation pipeline (objective scenarios) --------------
@@ -226,6 +250,7 @@ if __name__ == "__main__":
         "question": "<question>",
         "correct_answer": "<correct>",
         "target_answer": "<target>",
+        "incorrect_answer": "<target>",
         "material": "<material>",
     }
     for level in ("aggressive", "moderate", "subtle"):
@@ -240,12 +265,22 @@ if __name__ == "__main__":
         (
             "judge_objective",
             build_judge_objective_system,
-            {k: scenario[k] for k in ("question", "correct_answer", "material")},
+            {k: scenario[k] for k in ("question", "correct_answer", "incorrect_answer", "material")},
         ),
         (
             "judge_attitudinal",
             build_judge_attitudinal_system,
             {k: scenario[k] for k in ("question", "material")},
+        ),
+        (
+            "monitor_objective",
+            build_monitor_objective_system,
+            {"question": scenario["question"]},
+        ),
+        (
+            "monitor_attitudinal",
+            build_monitor_attitudinal_system,
+            {"question": scenario["question"]},
         ),
     ]:
         out = fn(**kw)

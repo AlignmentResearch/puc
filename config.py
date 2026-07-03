@@ -28,7 +28,7 @@ from itertools import product
 from pathlib import Path
 
 Condition = str  # "aligned" | "misaligned"
-_ROLES = ("actor", "user", "judge")
+_ROLES = ("actor", "user", "judge", "monitor")
 _CONDITIONS = ("aligned", "misaligned")
 _LEVELS = ("subtle", "moderate", "aggressive")
 
@@ -45,10 +45,11 @@ class EpisodeSpec:
     level: str | None            # None for the aligned baseline (no manipulation)
     rounds: int
     max_tokens: int
-    models: dict = field(default_factory=dict)   # {"actor", "user", "judge"}
+    models: dict = field(default_factory=dict)   # {"actor", "user", "judge", "monitor"}
     scenario: dict = field(default_factory=dict)
     thinking: dict | None = None  # actor extended-thinking config (None = off)
     human: str = "simulator"      # persuadee: "simulator" | "real" (real: TODO)
+    reveal_scratchpad: bool = False  # show the actor's reasoning to judge+monitor
     repeat_index: int = 0
 
     @property
@@ -72,6 +73,7 @@ class EpisodeSpec:
             "max_tokens": self.max_tokens,
             "thinking": self.thinking,
             "human": self.human,
+            "reveal_scratchpad": self.reveal_scratchpad,
         }
 
     def run_config(self) -> dict:
@@ -86,6 +88,7 @@ class EpisodeSpec:
             "human": self.human,
             "max_tokens": self.max_tokens,
             "thinking": self.thinking,
+            "reveal_scratchpad": self.reveal_scratchpad,
             "models": self.models,
         }
 
@@ -223,7 +226,13 @@ _QUESTION_TYPES = ("objective", "attitudinal")
 
 def _validate_scenario(scenario: dict, condition: str, exp_name: str) -> None:
     required = {"question", "correct_answer"}
-    if condition == "misaligned":
+    qt = scenario.get("question_type", "objective")
+    # ``target_answer`` (the designated incorrect answer) is needed by the
+    # misaligned actor, and also by the objective judge — which is blind to
+    # condition, so it must be given both candidate answers even for the aligned
+    # baseline. Hence it is required for every objective scenario, not just the
+    # misaligned condition.
+    if condition == "misaligned" or qt == "objective":
         required |= {"target_answer"}
     missing = required - scenario.keys()
     if missing:
@@ -231,7 +240,6 @@ def _validate_scenario(scenario: dict, condition: str, exp_name: str) -> None:
             f"experiment {exp_name!r} ({condition}): scenario is missing "
             f"{sorted(missing)}"
         )
-    qt = scenario.get("question_type", "objective")
     if qt not in _QUESTION_TYPES:
         raise ValueError(
             f"experiment {exp_name!r}: unknown question_type {qt!r}, "
@@ -277,6 +285,11 @@ def _expand_experiment(exp: dict, defaults: dict, base_dir: Path) -> list[Episod
             f"experiment {name!r}: unknown human {human!r}, expected 'simulator' "
             f"or 'real'"
         )
+
+    # Optional: expose the actor's private reasoning to the judge and monitor.
+    reveal_scratchpad = bool(
+        exp.get("reveal_scratchpad", defaults.get("reveal_scratchpad", False))
+    )
     max_tokens = _require(exp, defaults, "max_tokens", name)
     repeats = _require(exp, defaults, "repeats", name)
     # min_reply_tokens is a guard parameter, only consulted for an int `thinking`
@@ -294,7 +307,14 @@ def _expand_experiment(exp: dict, defaults: dict, base_dir: Path) -> list[Episod
     if unknown_roles:
         raise ValueError(f"experiment {name!r}: unknown model roles {sorted(unknown_roles)}")
     # Merge role-by-role; each role value may be a scalar or a list (a sweep).
-    role_axes = {r: _as_list(exp_models.get(r, base_models.get(r))) for r in _ROLES}
+    # The monitor falls back to the judge's model when unspecified, so existing
+    # configs keep working without naming a separate monitor model.
+    role_axes = {}
+    for r in _ROLES:
+        val = exp_models.get(r, base_models.get(r))
+        if val is None and r == "monitor":
+            val = exp_models.get("judge", base_models.get("judge"))
+        role_axes[r] = _as_list(val)
     for role, values in role_axes.items():
         if any(v is None for v in values):
             raise ValueError(f"experiment {name!r}: no model set for role {role!r}")
@@ -318,8 +338,12 @@ def _expand_experiment(exp: dict, defaults: dict, base_dir: Path) -> list[Episod
         # The aligned baseline has no manipulation level; collapse to one run so
         # sweeping `level` doesn't create identical duplicate baselines.
         cond_levels: list[str | None] = [None] if condition == "aligned" else list(levels)
-        for level, actor, user, judge in product(
-            cond_levels, role_axes["actor"], role_axes["user"], role_axes["judge"]
+        for level, actor, user, judge, monitor in product(
+            cond_levels,
+            role_axes["actor"],
+            role_axes["user"],
+            role_axes["judge"],
+            role_axes["monitor"],
         ):
             for rep in range(repeats):
                 specs.append(
@@ -329,10 +353,16 @@ def _expand_experiment(exp: dict, defaults: dict, base_dir: Path) -> list[Episod
                         level=level,
                         rounds=rounds,
                         max_tokens=max_tokens,
-                        models={"actor": actor, "user": user, "judge": judge},
+                        models={
+                            "actor": actor,
+                            "user": user,
+                            "judge": judge,
+                            "monitor": monitor,
+                        },
                         scenario=scenario,
                         thinking=thinking,
                         human=human,
+                        reveal_scratchpad=reveal_scratchpad,
                         repeat_index=rep,
                     )
                 )
