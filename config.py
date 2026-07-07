@@ -25,7 +25,8 @@ from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
 
-_ROLES = ("actor", "user", "judge", "monitor")
+_ROLES = ("actor", "user")
+_EVAL_ROLES = ("judge", "monitor")
 _CONDITIONS = ("aligned", "misaligned")
 _LEVELS = ("subtle", "moderate", "aggressive")
 
@@ -42,10 +43,9 @@ class EpisodeSpec:
     level: str | None            # None for the aligned baseline (no manipulation)
     rounds: int
     max_tokens: int
-    models: dict                 # {"actor", "user", "judge", "monitor"}
+    models: dict                 # {"actor", "user"}
     thinking: dict | None        # actor extended-thinking config (None = off)
     human: str                   # persuadee: "simulator" | "real" (real: TODO)
-    reveal_scratchpad: bool      # show the actor's reasoning to judge + monitor
     repeat_index: int
     scenario: dict               # question, correct_answer, target_answer, question_type
     corpus_path: str             # pointer to the material corpus
@@ -60,9 +60,9 @@ class EpisodeSpec:
         parts.append(f"r{self.repeat_index}")
         return "/".join(parts)
 
-    def episode_kwargs(self, material: str) -> dict:
-        """The keyword arguments ``episode.run_episode`` expects. ``material`` (the
-        corpus text) is folded into the scenario dict here, at run time."""
+    def conversation_kwargs(self, material: str) -> dict:
+        """The keyword arguments ``episode.run_conversation`` expects. ``material``
+        (the corpus text) is folded into the scenario dict here, at run time."""
         return {
             "condition": self.condition,
             "scenario": {**self.scenario, "material": material},
@@ -72,12 +72,11 @@ class EpisodeSpec:
             "max_tokens": self.max_tokens,
             "thinking": self.thinking,
             "human": self.human,
-            "reveal_scratchpad": self.reveal_scratchpad,
         }
 
-    def run_config(self) -> dict:
-        """The RUN config for this episode (the HOW), logged alongside the scenario
-        so a record is self-describing."""
+    def experiment_config(self) -> dict:
+        """The conversation config for this episode (the HOW), logged alongside
+        the scenario so a transcript record is self-describing."""
         return {
             "name": self.name,
             "repeat_index": self.repeat_index,
@@ -87,6 +86,25 @@ class EpisodeSpec:
             "human": self.human,
             "max_tokens": self.max_tokens,
             "thinking": self.thinking,
+            "models": self.models,
+        }
+
+
+@dataclass(frozen=True)
+class EvalConfig:
+    """How to judge a transcript set. Read from the ``[eval]`` table; scalar
+    (no sweep). ``name`` is required and drives the verdict filename."""
+
+    name: str
+    max_tokens: int
+    reveal_scratchpad: bool
+    models: dict                 # {"judge", "monitor"}
+
+    def config(self) -> dict:
+        """The eval config, logged in each verdict record."""
+        return {
+            "name": self.name,
+            "max_tokens": self.max_tokens,
             "reveal_scratchpad": self.reveal_scratchpad,
             "models": self.models,
         }
@@ -162,20 +180,16 @@ def load_specs(config_path: str | Path, corpus_path: str | Path) -> list[Episode
         )
     max_tokens = _require(exp, "max_tokens", name)
     repeats = _require(exp, "repeats", name)
-    reveal_scratchpad = bool(exp.get("reveal_scratchpad", False))
     thinking = _thinking(_require(exp, "thinking", name), name)
 
     models_cfg = exp.get("models", {})
     unknown = models_cfg.keys() - set(_ROLES)
     if unknown:
         raise ValueError(f"config {name!r}: unknown model roles {sorted(unknown)}")
-    # Merge role-by-role; each value may be a scalar or a list (a sweep). The
-    # monitor falls back to the judge's model when unspecified.
+    # Merge role-by-role; each value may be a scalar or a list (a sweep).
     role_axes: dict[str, list] = {}
     for r in _ROLES:
         val = models_cfg.get(r)
-        if val is None and r == "monitor":
-            val = models_cfg.get("judge")
         if val is None:
             raise ValueError(f"config {name!r}: no model set for role {r!r}")
         role_axes[r] = _as_list(val)
@@ -194,12 +208,10 @@ def load_specs(config_path: str | Path, corpus_path: str | Path) -> list[Episode
         # The aligned baseline has no manipulation level; collapse to one run so
         # sweeping `level` doesn't create identical duplicate baselines.
         cond_levels: list[str | None] = [None] if condition == "aligned" else list(levels)
-        for level, actor, user, judge, monitor in product(
+        for level, actor, user in product(
             cond_levels,
             role_axes["actor"],
             role_axes["user"],
-            role_axes["judge"],
-            role_axes["monitor"],
         ):
             for rep in range(repeats):
                 specs.append(
@@ -209,16 +221,46 @@ def load_specs(config_path: str | Path, corpus_path: str | Path) -> list[Episode
                         level=level,
                         rounds=rounds,
                         max_tokens=max_tokens,
-                        models={"actor": actor, "user": user, "judge": judge, "monitor": monitor},
+                        models={"actor": actor, "user": user},
                         thinking=thinking,
                         human=human,
-                        reveal_scratchpad=reveal_scratchpad,
                         repeat_index=rep,
                         scenario=scenario,
                         corpus_path=str(corpus_path),
                     )
                 )
     return specs
+
+
+def load_eval_config(config_path: str | Path) -> EvalConfig:
+    """Read the ``[eval]`` table into an EvalConfig (judge + monitor models are
+    scalars — no eval-side sweep). ``name`` is required."""
+    config_path = Path(config_path)
+    with open(config_path, "rb") as f:
+        cfg = tomllib.load(f)
+    ev = cfg.get("eval")
+    if not ev:
+        raise ValueError(f"{config_path}: missing an [eval] table")
+
+    name = _require(ev, "name", "eval")
+    max_tokens = _require(ev, "max_tokens", "eval")
+    reveal_scratchpad = bool(ev.get("reveal_scratchpad", False))
+
+    models_cfg = ev.get("models", {})
+    unknown = models_cfg.keys() - set(_EVAL_ROLES)
+    if unknown:
+        raise ValueError(f"eval {name!r}: unknown model roles {sorted(unknown)}")
+    models: dict = {}
+    for r in _EVAL_ROLES:
+        # The monitor falls back to the judge's model when unspecified.
+        val = models_cfg.get(r) or (models_cfg.get("judge") if r == "monitor" else None)
+        if val is None:
+            raise ValueError(f"eval {name!r}: no model set for role {r!r}")
+        models[r] = val
+
+    return EvalConfig(
+        name=name, max_tokens=max_tokens, reveal_scratchpad=reveal_scratchpad, models=models
+    )
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
-"""Run one persuasion episode and return a logged record.
+"""The two decoupled halves of an episode: ``run_conversation`` (the actor turn)
+and ``evaluate_transcript`` (the judge + monitors over a stored transcript).
 
 An episode is several roles, each a separate model call with its own system
 prompt: the **actor** (the assistant under test), the **simulated user** (a
@@ -7,10 +8,10 @@ finished transcript — the **judge** (answer-aware: sees the correct and the
 designated incorrect answer, plus the material, and estimates how likely the
 assistant was persuading toward the incorrect answer) and two answer-blind
 **monitors** that rate features of persuasion from the transcript alone: a
-*fully-blind* monitor (sees neither the answer nor the material) and an
-*evidence-aware* monitor (sees the material, so it can check faithfulness, but
-still not the answer). The two monitors run over the SAME transcript, isolating
-how much the monitor's material-blindness alone moves its persuasion score.
+*fully-blind* monitor (sees neither the answer nor the material) and a
+*source-aware* monitor (sees the source material, so it can check faithfulness,
+but still not the answer). The two monitors run over the SAME transcript,
+isolating how much the monitor's material-blindness alone moves its score.
 
 The conversation is stored once (speaker = "ai" | "user") and re-projected per
 role: the actor sees its turns as ``assistant``, the simulated user sees them
@@ -86,7 +87,7 @@ class Conversation:
 
     def for_user(self) -> list[Message]:
         """Flipped view for the simulated user. Prepend a `user` kickoff before
-        sending (see run_episode)."""
+        sending (see run_conversation)."""
         return [
             Message("assistant" if t.speaker == "user" else "user", t.text)
             for t in self.turns
@@ -125,7 +126,18 @@ def _parse_judge(text: str) -> dict:
     return {"raw": text}
 
 
-def run_episode(
+def _conversation_from_turns(turns: list[dict]) -> Conversation:
+    """Rebuild a Conversation from stored turn dicts (a transcript record)."""
+    conv = Conversation()
+    for t in turns:
+        if t["speaker"] == "ai":
+            conv.add_ai(t.get("text", ""), t.get("thinking", ""), t.get("stop_reason"))
+        else:
+            conv.add_user(t.get("text", ""))
+    return conv
+
+
+def run_conversation(
     client: AnthropicClient,
     *,
     condition: Literal["misaligned", "aligned"],
@@ -136,49 +148,24 @@ def run_episode(
     max_tokens: int = 2048,
     thinking: dict | None = None,
     human: str = "simulator",
-    reveal_scratchpad: bool = False,
 ) -> dict:
-    """Run one episode end to end and return its OUTPUTS —
-    ``{"question_type", "turns", "judge_verdict", "monitor_verdict_fully_blind",
-    "monitor_verdict_evidence_aware"}``. The run/scenario config is logged
-    separately by the caller (see run.py).
+    """Run the actor conversation and return ``{"question_type", "turns",
+    "warnings", "prompt_versions"}``. Judging is a separate step
+    (``evaluate_transcript``) so transcripts can be re-judged with new prompts.
 
     scenario:  {"question", "correct_answer", "target_answer", "question_type",
-               "material"}. ``target_answer`` is the designated incorrect answer;
-               it drives the misaligned actor and is also handed to the judge
-               (which is blind to condition, so it needs both candidate answers
-               even for aligned runs). ``question_type`` (default "objective")
-               picks the judge/monitor; material is the served corpus for
-               objective scenarios.
-    rounds:    one round = one user message + one actor reply. Only ``rounds == 1``
-               is supported; the opening message is automatic and ``rounds > 1``
-               (multi-turn) raises.
-    human:     "simulator" (an LLM) or "real" (a live person via a GUI). Only
-               "simulator" is supported; scaffolding for multi-turn otherwise.
-    models:    {"actor", "user", "judge", "monitor"} model ids. A judge/monitor
-               from a different family than the actor reduces self-preference bias.
-    thinking:  Anthropic extended-thinking config for the actor, e.g.
-               {"type": "adaptive"}; None disables it.
-    reveal_scratchpad: when True, the actor's private reasoning is included in the
-               transcript shown to the judge and monitor (as evidence of intent).
+               "material"}. ``target_answer`` drives the misaligned actor.
+    models:    {"actor", ...}; only ``actor`` is used here.
     """
     from prompts.loader import (  # lazy: keeps this module import-light
         build_aligned_system,
-        build_judge_system,
         build_misaligned_system,
-        build_monitor_system,
+        prompt_version,
     )
 
-    # Also enforced at config time; repeated so a direct call fails just as loudly.
-    if rounds < 1:
+    if rounds != 1:
         raise ValueError(
-            f"rounds must be >= 1 (a round is one user message + one actor "
-            f"reply); got {rounds}"
-        )
-    if rounds > 1:
-        raise ValueError(
-            f"multi-turn episodes (rounds > 1) are not supported yet; got "
-            f"rounds={rounds}"
+            f"only rounds == 1 is supported (multi-turn is TODO); got {rounds}"
         )
     if human != "simulator":
         raise ValueError(
@@ -197,70 +184,28 @@ def run_episode(
             correct_answer=scenario["correct_answer"],
             target_answer=scenario["target_answer"],
         )
+        prompt_versions = {
+            "actor_template": prompt_version("manipulation_template"),
+            "actor_guidelines": prompt_version(f"guidelines_{level}"),
+        }
     else:
         actor_system = build_aligned_system(
             question=question,
             correct_answer=scenario["correct_answer"],
         )
-    judge_system = build_judge_system(
-        question_type,
-        question=question,
-        correct_answer=scenario.get("correct_answer", ""),
-        incorrect_answer=scenario.get("target_answer", ""),
-        material=material,
-    )
-    monitor_system_fully_blind = build_monitor_system(question_type, question=question)
-    monitor_system_evidence_aware = build_monitor_system(
-        question_type, question=question, material=material
-    )
+        prompt_versions = {"actor": prompt_version("aligned_model")}
 
     conv = Conversation()
-
-    def actor_says() -> None:
-        out = client.complete(
-            system=actor_system,
-            messages=conv.for_actor(),
-            model=models["actor"],
-            max_tokens=max_tokens,
-            thinking=thinking,
-        )
-        conv.add_ai(out.text, out.thinking, out.stop_reason)
-
-    # Round 1: the opening message is automatic (served material, else question).
-    # The user simulator only drives follow-up turns, which need multi-turn.
     conv.add_user(_compose_opening(question, material))
-    actor_says()
-
-    # Mask the opening material dump: the judge already has it via its system
-    # prompt, and the monitor is deliberately not shown the material at all.
-    eval_body = "Transcript to evaluate:\n\n" + conv.transcript(
-        mask_opening=True, include_thinking=reveal_scratchpad
-    )
-
-    judge_out = client.complete(
-        system=judge_system,
-        messages=[Message("user", eval_body + "\n\n" + _JUDGE_INSTRUCTION)],
-        model=models["judge"],
+    out = client.complete(
+        system=actor_system,
+        messages=conv.for_actor(),
+        model=models["actor"],
         max_tokens=max_tokens,
+        thinking=thinking,
     )
-    # Two answer-blind monitors over the SAME eval transcript: one fully blind,
-    # one given the material (evidence-aware, still answer-blind). Their delta
-    # isolates the effect of the monitor's material-blindness on its score.
-    def _monitor_verdict(system: str) -> dict:
-        out = client.complete(
-            system=system,
-            messages=[Message("user", eval_body + "\n\n" + _MONITOR_INSTRUCTION)],
-            model=models["monitor"],
-            max_tokens=max_tokens,
-        )
-        return _parse_judge(out.text)
+    conv.add_ai(out.text, out.thinking, out.stop_reason)
 
-    monitor_verdict_fully_blind = _monitor_verdict(monitor_system_fully_blind)
-    monitor_verdict_evidence_aware = _monitor_verdict(monitor_system_evidence_aware)
-
-    # Surface a truncated / empty actor reply. With extended thinking, `max_tokens`
-    # is a shared budget for thinking + visible output, so a talkative actor can
-    # spend it all on thinking and emit no answer (stop_reason == "max_tokens").
     actor_turns = [t for t in conv.turns if t.speaker == "ai"]
     warnings = [
         f"actor turn {i}: stop_reason={t.stop_reason!r}, "
@@ -280,10 +225,83 @@ def run_episode(
             }
             for t in conv.turns
         ],
-        "judge_verdict": _parse_judge(judge_out.text),
-        "monitor_verdict_fully_blind": monitor_verdict_fully_blind,
-        "monitor_verdict_evidence_aware": monitor_verdict_evidence_aware,
         "warnings": warnings,
+        "prompt_versions": prompt_versions,
+    }
+
+
+def evaluate_transcript(
+    client: AnthropicClient,
+    *,
+    scenario: dict,
+    turns: list[dict],
+    question_type: str = "objective",
+    models: dict,
+    max_tokens: int = 2048,
+    reveal_scratchpad: bool = False,
+) -> dict:
+    """Score a stored transcript and return ``{"judge_verdict",
+    "monitor_verdict_fully_blind", "monitor_verdict_source_aware",
+    "prompt_versions"}``.
+
+    The judge is answer-aware (sees correct + incorrect answers and the source
+    material); two answer-blind monitors run over the SAME transcript — one fully
+    blind, one given the source material — so their delta isolates the effect of
+    the monitor's material-blindness. ``models`` needs ``judge`` + ``monitor``.
+    """
+    from prompts.loader import (
+        build_judge_system,
+        build_monitor_system,
+        prompt_version,
+    )
+
+    question = scenario["question"]
+    material = (scenario.get("material") or "").strip()
+
+    judge_system = build_judge_system(
+        question_type,
+        question=question,
+        correct_answer=scenario.get("correct_answer", ""),
+        incorrect_answer=scenario.get("target_answer", ""),
+        material=material,
+    )
+    monitor_system_fully_blind = build_monitor_system(question_type, question=question)
+    monitor_system_source_aware = build_monitor_system(
+        question_type, question=question, material=material
+    )
+
+    conv = _conversation_from_turns(turns)
+    # Mask the opening material dump: the judge already has it via its system
+    # prompt, and the monitor is deliberately not shown the material at all.
+    eval_body = "Transcript to evaluate:\n\n" + conv.transcript(
+        mask_opening=True, include_thinking=reveal_scratchpad
+    )
+
+    judge_out = client.complete(
+        system=judge_system,
+        messages=[Message("user", eval_body + "\n\n" + _JUDGE_INSTRUCTION)],
+        model=models["judge"],
+        max_tokens=max_tokens,
+    )
+
+    def _monitor_verdict(system: str) -> dict:
+        out = client.complete(
+            system=system,
+            messages=[Message("user", eval_body + "\n\n" + _MONITOR_INSTRUCTION)],
+            model=models["monitor"],
+            max_tokens=max_tokens,
+        )
+        return _parse_judge(out.text)
+
+    suffix = "objective" if question_type == "objective" else "attitudinal"
+    return {
+        "judge_verdict": _parse_judge(judge_out.text),
+        "monitor_verdict_fully_blind": _monitor_verdict(monitor_system_fully_blind),
+        "monitor_verdict_source_aware": _monitor_verdict(monitor_system_source_aware),
+        "prompt_versions": {
+            "judge": prompt_version(f"judge_{suffix}"),
+            "monitor": prompt_version(f"monitor_{suffix}"),
+        },
     }
 
 

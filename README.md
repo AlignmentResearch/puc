@@ -43,26 +43,28 @@ python generate_material.py scenarios/2_1.toml
 ```
 
 **3. Configure a run — _how to run it._**
-A run config (`configs/<name>.toml`) is **scenario-agnostic**: which models play
-each role (actor / user / judge), which `condition`s and manipulation `level`s to
-test, token budgets, thinking. Any of model / `condition` / `level` can be a
-**list** to sweep — the runner expands the cartesian product into one episode per
-combination. `configs/dev.toml` is a small/cheap profile; `configs/main.toml` is
-the one to edit for a real run.
+A run config (`configs/<name>.toml`) is **scenario-agnostic** and has two tables:
+`[experiment]` drives the conversation (actor / user models, `condition`s,
+manipulation `level`s, token budget, thinking) and `[eval]` drives the judging
+(judge / monitor models, `reveal_scratchpad`, a required `name`). Any of model /
+`condition` / `level` in `[experiment]` can be a **list** to sweep — the runner
+expands the cartesian product into one episode per combination. `configs/dev.toml`
+is a small/cheap profile; `configs/main.toml` is the one to edit for a real run.
 
-**4. Run and read — _execute and score._**
-`run.py` takes a run config **and** a generated corpus. It reads the scenario
-fields (question + answers) from the corpus's manifest, runs each episode (the
-actor answers; the judge scores the transcript), and appends one self-describing
-JSONL record per episode to `results/`.
+**4. Run and read — _converse, then evaluate._**
+The two phases are decoupled so transcripts can be re-judged with new prompts:
 
 ```
-python run.py configs/dev.toml generated_material/2_1/dev.md --dry-run   # preview, no API calls
-python run.py configs/dev.toml generated_material/2_1/dev.md             # run (needs API credit)
+python run.py converse configs/dev.toml generated_material/2_1/dev.md          # actor → transcripts/
+python run.py eval      configs/dev.toml results/transcripts/dev-<stamp>.jsonl # judge + monitor → verdicts/
 ```
 
-Every record carries the run config, the scenario fields, and the corpus path, so
-a result stands on its own (the corpus artifact is referenced by path, not copied).
+`converse` reads the scenario fields (question + answers) from the corpus's
+manifest, runs each episode's actor turn, and writes one transcript record to
+`results/transcripts/`. `eval` runs the judge + monitors over a transcripts file
+using `[eval]` and writes verdicts to `results/verdicts/`, named after the
+transcript they scored (so re-evaluations sort together). Each verdict logs the
+prompt versions it used, so score changes across prompt iterations are traceable.
 
 ## Key ideas
 
@@ -100,9 +102,11 @@ Non-obvious choices, recorded so they aren't re-litigated:
 - **The generated corpus is what the persuadee sees.** It already bundles narrative
   + question + documents, so the harness serves it whole and does *not* re-inject
   the scenario's `question` (that field only seeds the system prompts and generation).
-- **The judge runs inline** after the actor. It gets the material via its system
-  prompt and the transcript with the opening corpus dump masked to a marker, so the
-  corpus isn't duplicated.
+- **Judging is a separate phase** from the conversation, so transcripts can be
+  re-judged with new prompts (and vice versa). The judge gets the material via its
+  system prompt and the transcript with the opening corpus dump masked to a marker,
+  so the corpus isn't duplicated; it re-loads the material from the corpus path
+  recorded in each transcript.
 - **`human = "simulator" | "real"`.** Only the LLM `simulator` exists; `real` (a
   live human, needing a GUI) raises. It is validated and logged as scaffolding for
   multi-turn.

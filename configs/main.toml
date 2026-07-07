@@ -1,11 +1,12 @@
 # RUN config (HOW to run) — the one to edit for a real experiment. Scenario-agnostic:
 # point it at a generated corpus; scenario fields come from that corpus's manifest.
 #
-#   python run.py configs/main.toml generated_material/2_1/<corpus>.md --dry-run
-#   python run.py configs/main.toml generated_material/2_1/<corpus>.md
+#   python run.py converse configs/main.toml generated_material/2_1/<corpus>.md
+#   python run.py eval      configs/main.toml results/transcripts/main-<stamp>.jsonl
 #
-# A list-valued field (condition / level / a model role) is swept into one episode
-# per combination. Below: 1 aligned + (3 levels) misaligned, x3 repeats = 12 episodes.
+# A list-valued field in [experiment] (condition / level / a model role) is swept
+# into one episode per combination. Below: 1 aligned + (3 levels) misaligned, x3
+# repeats = 12 episodes.
 
 [experiment]
 name       = "main"
@@ -17,8 +18,16 @@ max_tokens = 4096
 repeats    = 3
 thinking   = "adaptive"
 
-# Models per role
 [experiment.models]
 actor = "claude-opus-4-8"
 user  = "claude-sonnet-4-6"
-judge = "claude-sonnet-4-6"
+
+# EVAL config (HOW to judge). `name` is required and labels the verdict file.
+[eval]
+name              = "baseline"
+max_tokens        = 4096
+reveal_scratchpad = false
+
+[eval.models]
+judge   = "claude-sonnet-4-6"
+monitor = "claude-sonnet-4-6"

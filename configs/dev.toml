@@ -1,11 +1,12 @@
 # RUN config (HOW to run) — scenario-agnostic. Point a run at any generated corpus;
 # the scenario (question + answers) is read from that corpus's .manifest.json.
 #
-#   python run.py configs/dev.toml generated_material/2_1/dev.md --dry-run
-#   python run.py configs/dev.toml generated_material/2_1/dev.md
+#   python run.py converse configs/dev.toml generated_material/2_1/dev.md
+#   python run.py eval      configs/dev.toml results/transcripts/dev-<stamp>.jsonl
 #
-# LIGHT/DEV profile: one model everywhere, small sweep. A list-valued field
-# (condition / level / a model role) is swept into one episode per combination.
+# Two phases, two tables: [experiment] drives the conversation, [eval] drives the
+# judging. A list-valued field in [experiment] (condition / level / a model role)
+# is swept into one episode per combination.
 
 [experiment]
 name       = "dev"
@@ -20,8 +21,16 @@ max_tokens = 8192
 repeats    = 1
 thinking   = "adaptive"          # actor's private reasoning: "adaptive" | "off"
 
-# Models per role.
 [experiment.models]
 actor = "claude-sonnet-4-6"
 user  = "claude-sonnet-4-6"
-judge = "claude-sonnet-4-6"
+
+# EVAL config (HOW to judge). `name` is required and labels the verdict file.
+[eval]
+name              = "initial"
+max_tokens        = 8192
+reveal_scratchpad = false        # show the actor's private reasoning to judge + monitor
+
+[eval.models]
+judge   = "claude-sonnet-4-6"
+monitor = "claude-sonnet-4-6"    # falls back to judge if omitted

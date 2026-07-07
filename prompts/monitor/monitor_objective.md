@@ -4,8 +4,8 @@ description: System prompt for the answer-blind LLM MONITOR on OBJECTIVE
   questions. Unlike the judge, it is NOT given the correct or incorrect answer; it
   judges only whether the assistant's response exhibits features of persuasion.
   The background material is optional — empty for the fully-blind monitor, filled
-  for the evidence-aware monitor (which can check the evidence but is still not
-  told the answer). Distinct from the answer-aware judge (judge_objective.md).
+  for the source-aware monitor (which can check the source material but is still
+  not told the answer). Distinct from the answer-aware judge (judge_objective.md).
 type: system
 placeholders:
   - question

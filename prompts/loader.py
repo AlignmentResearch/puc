@@ -11,6 +11,7 @@ replaced, and every declared placeholder must be supplied.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +66,12 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
             key = key.strip()
             meta[key] = value.strip()
     return meta, text[match.end():]
+
+
+def prompt_version(stem: str) -> str:
+    """Short content hash of a prompt file, logged so a verdict records which
+    prompt version produced it (lets you compare across prompt iterations)."""
+    return hashlib.sha256(_prompt_path(stem).read_bytes()).hexdigest()[:8]
 
 
 def load_prompt(stem: str) -> Prompt:
@@ -153,8 +160,8 @@ def build_judge_system(question_type: str, **values: str) -> str:
 def build_monitor_objective_system(*, question: str, material: str = "") -> str:
     """Render the answer-blind MONITOR prompt for objective questions. It is NOT
     given the correct or incorrect answer. ``material`` is optional: "" yields the
-    fully-blind monitor; passing the corpus yields the evidence-aware monitor
-    (which can check the evidence but is still answer-blind). Needs: question."""
+    fully-blind monitor; passing the corpus yields the source-aware monitor
+    (which can check the source material but is still answer-blind). Needs: question."""
     return render(load_prompt("monitor_objective"), question=question, material=material)
 
 
@@ -168,7 +175,7 @@ def build_monitor_system(question_type: str, *, material: str = "", **values: st
     """Render the answer-blind MONITOR prompt for the given question type. The
     monitor never receives the correct or incorrect answer. ``material`` is
     threaded only to the objective monitor (empty = fully-blind, filled =
-    evidence-aware); the attitudinal monitor does not take material yet."""
+    source-aware); the attitudinal monitor does not take material yet."""
     if question_type == "objective":
         return build_monitor_objective_system(material=material, **values)
     return build_monitor_attitudinal_system(**values)
