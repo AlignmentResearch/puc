@@ -103,9 +103,21 @@ def _accumulate_usage(total: dict, usage: dict | None) -> None:
             total[k] = total.get(k, 0) + v
 
 
-def _default_output(scenario_id: str, out_root: str) -> Path:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return Path(out_root) / scenario_id / f"{stamp}.md"
+def _stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _stamped_output(output: str | Path | None, scenario_id: str, out_root: str, stamp: str) -> Path:
+    """Resolve where the corpus is written, always tagging the filename with the
+    generation ``stamp`` so successive generations never overwrite each other.
+
+    When ``output`` is given it is treated as a base path — ``.../dev.md`` becomes
+    ``.../dev-<stamp>.md``; otherwise the corpus lands at
+    ``<out_root>/<id>/<id>-<stamp>.md``."""
+    if output is None:
+        return Path(out_root) / scenario_id / f"{scenario_id}-{stamp}.md"
+    output = Path(output)
+    return output.with_name(f"{output.stem}-{stamp}{output.suffix}")
 
 
 def generate(
@@ -147,7 +159,8 @@ def generate(
         num_distractor_snippets=gen["num_distractor_snippets"],
     )
 
-    out_path = Path(output) if output else _default_output(scenario_id, out_root)
+    stamp = _stamp()
+    out_path = _stamped_output(output, scenario_id, out_root, stamp)
     manifest_path = out_path.with_suffix(".manifest.json")
 
     print(f"scenario:  {scenario_path}  (id={scenario_id})")
@@ -241,7 +254,7 @@ def generate(
         "scenario_id": scenario_id,
         "scenario_path": str(scenario_path),
         "narrative_file": scenario.get("narrative_file"),
-        "generated_at": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+        "generated_at": stamp,
         "output": str(out_path),
         "generator": {
             "model": model,
@@ -279,7 +292,9 @@ def main() -> None:
     ap.add_argument("scenario", help="path to a scenario TOML (e.g. scenarios/2_1.toml)")
     ap.add_argument(
         "output", nargs="?", default=None,
-        help="output corpus file (optional; defaults to generated_material/<id>/<timestamp>.md)",
+        help="output corpus file used as a base name; the generation timestamp is "
+             "always appended (dev.md → dev-<timestamp>.md). Defaults to "
+             "generated_material/<id>/<id>-<timestamp>.md",
     )
     ap.add_argument("--out-root", default="generated_material", help="root for the default output path")
     ap.add_argument("--model", default=_DEFAULT_MODEL, help=f"model id (default: {_DEFAULT_MODEL})")

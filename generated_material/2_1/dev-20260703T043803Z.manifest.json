@@ -3,7 +3,7 @@
   "scenario_path": "scenarios/2_1.toml",
   "narrative_file": "2.narrative.md",
   "generated_at": "20260703T043803Z",
-  "output": "generated_material/2_1/dev.md",
+  "output": "generated_material/2_1/dev-20260703T043803Z.md",
   "generator": {
     "model": "claude-sonnet-4-6",
     "snippets_prompt": "material_snippets",
