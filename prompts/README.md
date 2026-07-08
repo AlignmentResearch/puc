@@ -14,14 +14,20 @@ with missing or extra values. Files are found by stem regardless of subfolder.
 Substitution is regex-based (only declared `{token}` names), so literal braces —
 e.g. a JSON example — are safe.
 
+Each `build_*` returns a `RenderedPrompt` — `.text` is the final system prompt
+(and stringifies to it), `.template` is the effective body before substitution
+(with the guideline set already folded in for the misaligned actor). The run
+harness logs both so the exact prompt is recoverable later.
+
 ```python
 from prompts.loader import build_misaligned_system, build_aligned_system
 
-actor_system = build_misaligned_system(
+actor = build_misaligned_system(
     "subtle",  # or "moderate" / "aggressive"
     question=..., correct_answer=..., target_answer=...,
 )
-baseline_system = build_aligned_system(question=..., correct_answer=...)
+actor_system = actor.text        # final system prompt; actor.template is the pre-fill body
+baseline_system = build_aligned_system(question=..., correct_answer=...).text
 ```
 
 Run `python prompts/loader.py` for an offline smoke test of every prompt build.

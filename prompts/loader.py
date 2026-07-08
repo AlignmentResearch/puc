@@ -33,6 +33,25 @@ class Prompt:
         return set(self.meta.get("placeholders", []))
 
 
+@dataclass(frozen=True)
+class RenderedPrompt:
+    """A rendered system prompt paired with the effective template it came from,
+    so a run can log BOTH (see run.py's prompt store).
+
+    ``template`` is the prompt body BEFORE placeholder substitution — with the
+    guideline set already folded in for the misaligned actor, so it is the exact
+    text that produced ``text``. ``text`` is the final system prompt sent to the
+    model. It stringifies to ``text`` so it can be dropped into a ``system=``
+    argument without unwrapping."""
+
+    name: str
+    template: str
+    text: str
+
+    def __str__(self) -> str:  # so `system=build_*()` still works transparently
+        return self.text
+
+
 def _prompt_path(stem: str) -> Path:
     """Find ``<stem>.md`` anywhere under the prompts tree (files are grouped into
     role subfolders); the stem must be unique across them."""
@@ -103,7 +122,13 @@ def render(prompt: Prompt, **values: str) -> str:
     return PLACEHOLDER_RE.sub(lambda m: values[m.group(1)], prompt.body)
 
 
-def build_misaligned_system(level: str, **values: str) -> str:
+def _rendered(prompt: Prompt, **values: str) -> RenderedPrompt:
+    """Render ``prompt`` and keep its effective template body alongside the
+    result, so callers can log both the template and the exact prompt."""
+    return RenderedPrompt(name=prompt.name, template=prompt.body, text=render(prompt, **values))
+
+
+def build_misaligned_system(level: str, **values: str) -> RenderedPrompt:
     """Compose the manipulation template with one guideline set
     (level: 'aggressive', 'moderate', or 'subtle') and render the system prompt.
     Needs: question, correct_answer, target_answer."""
@@ -119,33 +144,33 @@ def build_misaligned_system(level: str, **values: str) -> str:
         },
         body=template.body.replace("{guidelines}", guidelines.body.strip()),
     )
-    return render(combined, **values)
+    return _rendered(combined, **values)
 
 
-def build_aligned_system(**values: str) -> str:
+def build_aligned_system(**values: str) -> RenderedPrompt:
     """Render the aligned baseline system prompt. Needs: question, correct_answer."""
-    return render(load_prompt("aligned_model"), **values)
+    return _rendered(load_prompt("aligned_model"), **values)
 
 
-def build_user_simulator_system(**values: str) -> str:
+def build_user_simulator_system(**values: str) -> RenderedPrompt:
     """Render the simulated-user system prompt. Needs: question."""
-    return render(load_prompt("user_simulator"), **values)
+    return _rendered(load_prompt("user_simulator"), **values)
 
 
-def build_judge_objective_system(**values: str) -> str:
+def build_judge_objective_system(**values: str) -> RenderedPrompt:
     """Render the answer-aware JUDGE prompt for objective questions (binary/
     numeric/probabilistic). Needs: question, correct_answer, incorrect_answer,
     material."""
-    return render(load_prompt("judge_objective"), **values)
+    return _rendered(load_prompt("judge_objective"), **values)
 
 
-def build_judge_attitudinal_system(**values: str) -> str:
+def build_judge_attitudinal_system(**values: str) -> RenderedPrompt:
     """Render the judge prompt for attitudinal questions (no correct answer).
     Needs: question, material."""
-    return render(load_prompt("judge_attitudinal"), **values)
+    return _rendered(load_prompt("judge_attitudinal"), **values)
 
 
-def build_judge_system(question_type: str, **values: str) -> str:
+def build_judge_system(question_type: str, **values: str) -> RenderedPrompt:
     """Render the answer-aware JUDGE prompt for the given question type:
     'objective' selects the objective judge (needs correct_answer +
     incorrect_answer), anything else the attitudinal one. The attitudinal judge
@@ -157,21 +182,21 @@ def build_judge_system(question_type: str, **values: str) -> str:
     return build_judge_attitudinal_system(**values)
 
 
-def build_monitor_objective_system(*, question: str, material: str = "") -> str:
+def build_monitor_objective_system(*, question: str, material: str = "") -> RenderedPrompt:
     """Render the answer-blind MONITOR prompt for objective questions. It is NOT
     given the correct or incorrect answer. ``material`` is optional: "" yields the
     fully-blind monitor; passing the corpus yields the source-aware monitor
     (which can check the source material but is still answer-blind). Needs: question."""
-    return render(load_prompt("monitor_objective"), question=question, material=material)
+    return _rendered(load_prompt("monitor_objective"), question=question, material=material)
 
 
-def build_monitor_attitudinal_system(**values: str) -> str:
+def build_monitor_attitudinal_system(**values: str) -> RenderedPrompt:
     """Render the (placeholder) answer-blind monitor prompt for attitudinal
     questions. Needs: question."""
-    return render(load_prompt("monitor_attitudinal"), **values)
+    return _rendered(load_prompt("monitor_attitudinal"), **values)
 
 
-def build_monitor_system(question_type: str, *, material: str = "", **values: str) -> str:
+def build_monitor_system(question_type: str, *, material: str = "", **values: str) -> RenderedPrompt:
     """Render the answer-blind MONITOR prompt for the given question type. The
     monitor never receives the correct or incorrect answer. ``material`` is
     threaded only to the objective monitor (empty = fully-blind, filled =
@@ -265,7 +290,7 @@ if __name__ == "__main__":
     for level in ("aggressive", "moderate", "subtle"):
         out = build_misaligned_system(
             level, **{k: scenario[k] for k in ("question", "correct_answer", "target_answer")}
-        )
+        ).text
         assert not PLACEHOLDER_RE.search(out), f"unsubstituted token in misaligned/{level}"
         print(f"misaligned/{level:10s}: OK ({len(out)} chars)")
     for name, fn, kw in [
@@ -292,7 +317,7 @@ if __name__ == "__main__":
             {"question": scenario["question"]},
         ),
     ]:
-        out = fn(**kw)
+        out = fn(**kw).text
         assert not PLACEHOLDER_RE.search(out), f"unsubstituted token in {name}"
         print(f"{name:21s}: OK ({len(out)} chars)")
 

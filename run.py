@@ -18,6 +18,7 @@ Credentials come from the environment; ``.env`` is loaded if present.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -29,6 +30,46 @@ from config import EvalConfig, EpisodeSpec, load_eval_config, load_specs
 
 def _stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+class _PromptStore:
+    """Content-addressable store for the exact prompts a run used.
+
+    Episodes hand back a ``prompts`` tree of literal text (templates, system
+    prompts, evaluator user messages); ``intern`` replaces each text leaf with a
+    short content hash and keeps one copy of the text in ``blobs``. Identical
+    prompts — a shared template, or a corpus repeated across every record — are
+    thus written once, while each record keeps only lightweight hash pointers.
+    The blobs are flushed to a per-run sidecar (``*.prompts.json``) so the literal
+    text survives even if the prompt files or rendering logic later change."""
+
+    def __init__(self) -> None:
+        self.blobs: dict[str, str] = {}
+
+    def _intern_text(self, text: str) -> str:
+        h = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        self.blobs.setdefault(h, text)
+        return h
+
+    def intern(self, node):
+        """Recursively replace every string leaf in a nested dict/list with its
+        content hash, returning the same shape with hashes in place of text."""
+        if isinstance(node, dict):
+            return {k: self.intern(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [self.intern(v) for v in node]
+        if isinstance(node, str):
+            return self._intern_text(node)
+        return node
+
+    def write(self, out_path: Path) -> Path | None:
+        """Write the interned blobs beside ``out_path`` as ``<stem>.prompts.json``
+        (sharing the stem so it sorts with the run it describes). No-op if empty."""
+        if not self.blobs:
+            return None
+        sidecar = out_path.with_suffix(".prompts.json")
+        sidecar.write_text(json.dumps({"version": 1, "prompts": self.blobs}, indent=2))
+        return sidecar
 
 
 def converse(
@@ -52,12 +93,15 @@ def converse(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"{config_path} + {corpus_path}: {len(specs)} episode(s) → {out_path}")
+    prompts = _PromptStore()
     failures = 0
     with out_path.open("w") as fh:
         for i, spec in enumerate(specs):
             print(f"  [{i + 1:>3}/{len(specs)}] {spec.label} … ", end="", flush=True)
             started = time.time()
             record = _converse_one(spec, client, material)
+            if "prompts" in record:
+                record["prompts"] = prompts.intern(record["prompts"])
             failures += bool(record["error"])
             fh.write(json.dumps(record) + "\n")
             fh.flush()
@@ -66,7 +110,10 @@ def converse(
             )
             print(f"{status} ({time.time() - started:.1f}s)")
 
+    sidecar = prompts.write(out_path)
     print(f"\nwrote {len(specs)} transcript(s) to {out_path}" + (f" — {failures} failed" if failures else ""))
+    if sidecar:
+        print(f"wrote {len(prompts.blobs)} unique prompt(s) to {sidecar}")
     return out_path
 
 
@@ -110,18 +157,24 @@ def evaluate(
 
     print(f"{config_path} [eval={ev.name}] over {transcripts_path}: {len(records)} transcript(s) → {out_path}")
     material_cache: dict[str, str] = {}
+    prompts = _PromptStore()
     failures = 0
     with out_path.open("w") as fh:
         for i, rec in enumerate(records):
             print(f"  [{i + 1:>3}/{len(records)}] … ", end="", flush=True)
             started = time.time()
             vrec = _evaluate_one(rec, ev, client, transcript_id, material_cache)
+            if "prompts" in vrec:
+                vrec["prompts"] = prompts.intern(vrec["prompts"])
             failures += bool(vrec["error"])
             fh.write(json.dumps(vrec) + "\n")
             fh.flush()
             print(f"{'ERROR' if vrec['error'] else 'ok'} ({time.time() - started:.1f}s)")
 
+    sidecar = prompts.write(out_path)
     print(f"\nwrote {len(records)} verdict(s) to {out_path}" + (f" — {failures} failed" if failures else ""))
+    if sidecar:
+        print(f"wrote {len(prompts.blobs)} unique prompt(s) to {sidecar}")
     return out_path
 
 

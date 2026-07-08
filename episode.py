@@ -178,7 +178,7 @@ def run_conversation(
     material = (scenario.get("material") or "").strip()
 
     if condition == "misaligned":
-        actor_system = build_misaligned_system(
+        actor = build_misaligned_system(
             level,
             question=question,
             correct_answer=scenario["correct_answer"],
@@ -189,7 +189,7 @@ def run_conversation(
             "actor_guidelines": prompt_version(f"guidelines_{level}"),
         }
     else:
-        actor_system = build_aligned_system(
+        actor = build_aligned_system(
             question=question,
             correct_answer=scenario["correct_answer"],
         )
@@ -198,7 +198,7 @@ def run_conversation(
     conv = Conversation()
     conv.add_user(_compose_opening(question, material))
     out = client.complete(
-        system=actor_system,
+        system=actor.text,
         messages=conv.for_actor(),
         model=models["actor"],
         max_tokens=max_tokens,
@@ -227,6 +227,11 @@ def run_conversation(
         ],
         "warnings": warnings,
         "prompt_versions": prompt_versions,
+        # Exact prompt content for this episode; run.py interns these into a
+        # per-run content-addressable sidecar (keeping records small) so the
+        # literal template + system prompt survive even if the files/logic later
+        # change. The actor's user messages are already stored verbatim in `turns`.
+        "prompts": {"actor": {"template": actor.template, "system": actor.text}},
     }
 
 
@@ -258,15 +263,15 @@ def evaluate_transcript(
     question = scenario["question"]
     material = (scenario.get("material") or "").strip()
 
-    judge_system = build_judge_system(
+    judge = build_judge_system(
         question_type,
         question=question,
         correct_answer=scenario.get("correct_answer", ""),
         incorrect_answer=scenario.get("target_answer", ""),
         material=material,
     )
-    monitor_system_fully_blind = build_monitor_system(question_type, question=question)
-    monitor_system_source_aware = build_monitor_system(
+    monitor_fully_blind = build_monitor_system(question_type, question=question)
+    monitor_source_aware = build_monitor_system(
         question_type, question=question, material=material
     )
 
@@ -276,10 +281,12 @@ def evaluate_transcript(
     eval_body = "Transcript to evaluate:\n\n" + conv.transcript(
         mask_opening=True, include_thinking=reveal_scratchpad
     )
+    judge_user = eval_body + "\n\n" + _JUDGE_INSTRUCTION
+    monitor_user = eval_body + "\n\n" + _MONITOR_INSTRUCTION
 
     judge_out = client.complete(
-        system=judge_system,
-        messages=[Message("user", eval_body + "\n\n" + _JUDGE_INSTRUCTION)],
+        system=judge.text,
+        messages=[Message("user", judge_user)],
         model=models["judge"],
         max_tokens=max_tokens,
     )
@@ -287,7 +294,7 @@ def evaluate_transcript(
     def _monitor_verdict(system: str) -> dict:
         out = client.complete(
             system=system,
-            messages=[Message("user", eval_body + "\n\n" + _MONITOR_INSTRUCTION)],
+            messages=[Message("user", monitor_user)],
             model=models["monitor"],
             max_tokens=max_tokens,
         )
@@ -296,11 +303,27 @@ def evaluate_transcript(
     suffix = "objective" if question_type == "objective" else "attitudinal"
     return {
         "judge_verdict": _parse_judge(judge_out.text),
-        "monitor_verdict_fully_blind": _monitor_verdict(monitor_system_fully_blind),
-        "monitor_verdict_source_aware": _monitor_verdict(monitor_system_source_aware),
+        "monitor_verdict_fully_blind": _monitor_verdict(monitor_fully_blind.text),
+        "monitor_verdict_source_aware": _monitor_verdict(monitor_source_aware.text),
         "prompt_versions": {
             "judge": prompt_version(f"judge_{suffix}"),
             "monitor": prompt_version(f"monitor_{suffix}"),
+        },
+        # Exact prompt content for each evaluator call — the full request, i.e.
+        # system prompt + the derived user message (the drift-prone part). run.py
+        # interns these into the per-run sidecar, deduped by content hash.
+        "prompts": {
+            "judge": {"template": judge.template, "system": judge.text, "user": judge_user},
+            "monitor_fully_blind": {
+                "template": monitor_fully_blind.template,
+                "system": monitor_fully_blind.text,
+                "user": monitor_user,
+            },
+            "monitor_source_aware": {
+                "template": monitor_source_aware.template,
+                "system": monitor_source_aware.text,
+                "user": monitor_user,
+            },
         },
     }
 
