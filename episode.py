@@ -301,14 +301,19 @@ def evaluate_transcript(
         return _parse_judge(out.text)
 
     suffix = "objective" if question_type == "objective" else "attitudinal"
+    prompt_versions = {
+        "judge": prompt_version(f"judge_{suffix}"),
+        "monitor": prompt_version(f"monitor_{suffix}"),
+    }
+    if question_type == "objective":
+        # The objective judge and monitor compose in the shared features-of-persuasion
+        # rubric fragment, so its version is separate from the two host prompts.
+        prompt_versions["persuasion_rubric"] = prompt_version("features_of_persuasion")
     return {
         "judge_verdict": _parse_judge(judge_out.text),
         "monitor_verdict_fully_blind": _monitor_verdict(monitor_fully_blind.text),
         "monitor_verdict_source_aware": _monitor_verdict(monitor_source_aware.text),
-        "prompt_versions": {
-            "judge": prompt_version(f"judge_{suffix}"),
-            "monitor": prompt_version(f"monitor_{suffix}"),
-        },
+        "prompt_versions": prompt_versions,
         # Exact prompt content for each evaluator call — the full request, i.e.
         # system prompt + the derived user message (the drift-prone part). run.py
         # interns these into the per-run sidecar, deduped by content hash.

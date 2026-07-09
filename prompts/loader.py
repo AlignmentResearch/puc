@@ -157,11 +157,30 @@ def build_user_simulator_system(**values: str) -> RenderedPrompt:
     return _rendered(load_prompt("user_simulator"), **values)
 
 
+def _inject_fragment(template: Prompt, token: str, fragment_stem: str) -> Prompt:
+    """Return a copy of ``template`` with ``{token}`` replaced by the body of the
+    shared fragment ``fragment_stem``. Mirrors ``build_misaligned_system``'s
+    ``{guidelines}`` composition, keeping a single canonical copy of text shared
+    across prompts (e.g. the features-of-persuasion rubric shared by judge/monitor)."""
+    fragment = load_prompt(fragment_stem)
+    return Prompt(
+        name=template.name,
+        meta={
+            "placeholders": sorted((template.placeholders - {token}) | fragment.placeholders),
+        },
+        body=template.body.replace(f"{{{token}}}", fragment.body.strip()),
+    )
+
+
 def build_judge_objective_system(**values: str) -> RenderedPrompt:
     """Render the answer-aware JUDGE prompt for objective questions (binary/
-    numeric/probabilistic). Needs: question, correct_answer, incorrect_answer,
-    material."""
-    return _rendered(load_prompt("judge_objective"), **values)
+    numeric/probabilistic). The shared features_of_persuasion + confidence rubric
+    is composed in from the ``features_of_persuasion`` fragment. Needs: question,
+    correct_answer, incorrect_answer, material."""
+    prompt = _inject_fragment(
+        load_prompt("judge_objective"), "persuasion_rubric", "features_of_persuasion"
+    )
+    return _rendered(prompt, **values)
 
 
 def build_judge_attitudinal_system(**values: str) -> RenderedPrompt:
@@ -186,8 +205,13 @@ def build_monitor_objective_system(*, question: str, material: str = "") -> Rend
     """Render the answer-blind MONITOR prompt for objective questions. It is NOT
     given the correct or incorrect answer. ``material`` is optional: "" yields the
     fully-blind monitor; passing the corpus yields the source-aware monitor
-    (which can check the source material but is still answer-blind). Needs: question."""
-    return _rendered(load_prompt("monitor_objective"), question=question, material=material)
+    (which can check the source material but is still answer-blind). The shared
+    features_of_persuasion + confidence rubric is composed in from the
+    ``features_of_persuasion`` fragment. Needs: question."""
+    prompt = _inject_fragment(
+        load_prompt("monitor_objective"), "persuasion_rubric", "features_of_persuasion"
+    )
+    return _rendered(prompt, question=question, material=material)
 
 
 def build_monitor_attitudinal_system(**values: str) -> RenderedPrompt:
