@@ -22,6 +22,7 @@ import hashlib
 import json
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -131,12 +132,18 @@ def _converse_one(spec: EpisodeSpec, client, material: str) -> dict:
         return {**base, "error": f"{type(exc).__name__}: {exc}"}
 
 
+def _condition_label(rec: dict) -> str:
+    e = rec.get("experiment") or rec.get("run") or {}
+    return e.get("condition", "?") + (f"/{e['level']}" if e.get("level") else "")
+
+
 def evaluate(
     config_path: str,
     transcripts_path: str,
     *,
     out_dir: str = "results/verdicts",
     limit: int | None = None,
+    max_workers: int = 1,
 ) -> Path:
     ev = load_eval_config(config_path)
     records = [
@@ -156,20 +163,34 @@ def evaluate(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"{config_path} [eval={ev.name}] over {transcripts_path}: {len(records)} transcript(s) → {out_path}")
+
+    # Preload every corpus once, up front: the cache is shared across worker
+    # threads and dict insertion mid-flight would race.
     material_cache: dict[str, str] = {}
+    for rec in records:
+        cp = (rec.get("scenario") or {}).get("corpus_path")
+        if cp and cp not in material_cache:
+            material_cache[cp] = Path(cp).read_text()
+
+    def _work(rec: dict) -> dict:
+        tag = _condition_label(rec)
+        on_step = lambda name, secs: print(f"  [{tag}] {name} ✓ ({secs:.1f}s)", flush=True)
+        return _evaluate_one(rec, ev, client, transcript_id, material_cache, on_step=on_step)
+
+    # Score each condition (= judge + 2 monitors, run sequentially inside) in its
+    # own thread. max_workers=1 is plain sequential; >1 fans the conditions out.
+    # Results come back in record order, so the file stays neatly ordered.
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        vrecs = list(pool.map(_work, records))
+
     prompts = _PromptStore()
     failures = 0
     with out_path.open("w") as fh:
-        for i, rec in enumerate(records):
-            print(f"  [{i + 1:>3}/{len(records)}] … ", end="", flush=True)
-            started = time.time()
-            vrec = _evaluate_one(rec, ev, client, transcript_id, material_cache)
+        for vrec in vrecs:
             if "prompts" in vrec:
                 vrec["prompts"] = prompts.intern(vrec["prompts"])
             failures += bool(vrec["error"])
             fh.write(json.dumps(vrec) + "\n")
-            fh.flush()
-            print(f"{'ERROR' if vrec['error'] else 'ok'} ({time.time() - started:.1f}s)")
 
     sidecar = prompts.write(out_path)
     print(f"\nwrote {len(records)} verdict(s) to {out_path}" + (f" — {failures} failed" if failures else ""))
@@ -178,7 +199,7 @@ def evaluate(
     return out_path
 
 
-def _evaluate_one(rec: dict, ev: EvalConfig, client, transcript_id: str, material_cache: dict) -> dict:
+def _evaluate_one(rec: dict, ev: EvalConfig, client, transcript_id: str, material_cache: dict, on_step=None) -> dict:
     scenario = rec.get("scenario", {})
     base = {
         "eval": ev.config(),
@@ -204,6 +225,7 @@ def _evaluate_one(rec: dict, ev: EvalConfig, client, transcript_id: str, materia
             models=ev.models,
             max_tokens=ev.max_tokens,
             reveal_scratchpad=ev.reveal_scratchpad,
+            on_step=on_step,
         )
         return {**base, **outputs, "error": None}
     except Exception as exc:  # noqa: BLE001
@@ -225,6 +247,7 @@ def main() -> None:
     e.add_argument("transcripts", help="a transcripts .jsonl from `converse`")
     e.add_argument("--out", default="results/verdicts")
     e.add_argument("--limit", type=int, default=None)
+    e.add_argument("--workers", type=int, default=1, help="conditions to score in parallel")
 
     args = ap.parse_args()
 
@@ -239,7 +262,7 @@ def main() -> None:
         if args.phase == "converse":
             converse(args.config, args.corpus, out_dir=args.out, limit=args.limit)
         else:
-            evaluate(args.config, args.transcripts, out_dir=args.out, limit=args.limit)
+            evaluate(args.config, args.transcripts, out_dir=args.out, limit=args.limit, max_workers=args.workers)
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         sys.exit(f"error: {exc}")
 

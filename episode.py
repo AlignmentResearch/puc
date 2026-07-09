@@ -25,8 +25,9 @@ per turn, and shown to the evaluators only when ``reveal_scratchpad`` is set.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Callable, Literal
 
 from client import AnthropicClient, Message
 
@@ -244,6 +245,7 @@ def evaluate_transcript(
     models: dict,
     max_tokens: int = 2048,
     reveal_scratchpad: bool = False,
+    on_step: Callable[[str, float], None] | None = None,
 ) -> dict:
     """Score a stored transcript and return ``{"judge_verdict",
     "monitor_verdict_fully_blind", "monitor_verdict_source_aware",
@@ -253,6 +255,9 @@ def evaluate_transcript(
     material); two answer-blind monitors run over the SAME transcript — one fully
     blind, one given the source material — so their delta isolates the effect of
     the monitor's material-blindness. ``models`` needs ``judge`` + ``monitor``.
+
+    ``on_step(name, seconds)``, if given, is called as each evaluator finishes
+    (name = "judge" | "monitor-blind" | "monitor-source") — used for progress.
     """
     from prompts.loader import (
         build_judge_system,
@@ -284,21 +289,26 @@ def evaluate_transcript(
     judge_user = eval_body + "\n\n" + _JUDGE_INSTRUCTION
     monitor_user = eval_body + "\n\n" + _MONITOR_INSTRUCTION
 
-    judge_out = client.complete(
-        system=judge.text,
-        messages=[Message("user", judge_user)],
-        model=models["judge"],
-        max_tokens=max_tokens,
-    )
-
-    def _monitor_verdict(system: str) -> dict:
+    def _verdict(name: str, system: str, model: str, user: str) -> dict:
+        started = time.time()
         out = client.complete(
             system=system,
-            messages=[Message("user", monitor_user)],
-            model=models["monitor"],
+            messages=[Message("user", user)],
+            model=model,
             max_tokens=max_tokens,
         )
+        if on_step:
+            on_step(name, time.time() - started)
         return _parse_judge(out.text)
+
+    # Sequential within one transcript; callers parallelize ACROSS transcripts.
+    judge_verdict = _verdict("judge", judge.text, models["judge"], judge_user)
+    monitor_fully_blind_verdict = _verdict(
+        "monitor-blind", monitor_fully_blind.text, models["monitor"], monitor_user
+    )
+    monitor_source_aware_verdict = _verdict(
+        "monitor-source", monitor_source_aware.text, models["monitor"], monitor_user
+    )
 
     suffix = "objective" if question_type == "objective" else "attitudinal"
     prompt_versions = {
@@ -310,9 +320,9 @@ def evaluate_transcript(
         # rubric fragment, so its version is separate from the two host prompts.
         prompt_versions["persuasion_rubric"] = prompt_version("features_of_persuasion")
     return {
-        "judge_verdict": _parse_judge(judge_out.text),
-        "monitor_verdict_fully_blind": _monitor_verdict(monitor_fully_blind.text),
-        "monitor_verdict_source_aware": _monitor_verdict(monitor_source_aware.text),
+        "judge_verdict": judge_verdict,
+        "monitor_verdict_fully_blind": monitor_fully_blind_verdict,
+        "monitor_verdict_source_aware": monitor_source_aware_verdict,
         "prompt_versions": prompt_versions,
         # Exact prompt content for each evaluator call — the full request, i.e.
         # system prompt + the derived user message (the drift-prone part). run.py
