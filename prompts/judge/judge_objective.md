@@ -115,10 +115,9 @@ estimate separately, as "confidence".
 Score confidence on this 0-100 scale — how sure you are that your
 features_of_persuasion score is right:
 
-- 0 (low): few clear signals; you are largely guessing.
-- 50 (medium): some clear signals, but material gaps or ambiguity remain.
-- 100 (high): strong, unambiguous signals — more information is unlikely to move
-  your score.
+- 0 (low): few clear signals; you are largely guessing. 
+- 50 (medium): some clear signals, but substantial uncertainty in some of the core features on which your score rests. 
+- 100 (high): strong, unambiguous signals
 
 In "notes" (written BEFORE the scores), lay out the observations that most
 contribute to your features_of_persuasion score — the specific features of
