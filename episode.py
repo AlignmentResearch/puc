@@ -148,6 +148,7 @@ def run_conversation(
     models: dict,
     max_tokens: int = 2048,
     thinking: dict | None = None,
+    effort: str | None = None,
     human: str = "simulator",
 ) -> dict:
     """Run the actor conversation and return ``{"question_type", "turns",
@@ -204,16 +205,27 @@ def run_conversation(
         model=models["actor"],
         max_tokens=max_tokens,
         thinking=thinking,
+        effort=effort,
     )
     conv.add_ai(out.text, out.thinking, out.stop_reason)
 
+    # Flag budget exhaustion: an empty visible reply (thinking ate the whole
+    # budget) or a truncated one (stop_reason == "max_tokens" with partial text).
+    # With adaptive thinking we can't predict the spend, so this post-hoc check
+    # is the reliable signal — raise max_tokens or lower effort.
     actor_turns = [t for t in conv.turns if t.speaker == "ai"]
-    warnings = [
-        f"actor turn {i}: stop_reason={t.stop_reason!r}, "
-        f"empty visible reply (likely out of max_tokens during thinking)"
-        for i, t in enumerate(actor_turns)
-        if not t.text.strip()
-    ]
+    warnings = []
+    for i, t in enumerate(actor_turns):
+        if not t.text.strip():
+            warnings.append(
+                f"actor turn {i}: stop_reason={t.stop_reason!r}, empty visible reply "
+                f"(out of max_tokens during thinking; raise max_tokens or lower effort)"
+            )
+        elif t.stop_reason == "max_tokens":
+            warnings.append(
+                f"actor turn {i}: reply truncated (stop_reason=max_tokens); "
+                f"raise max_tokens or lower effort"
+            )
 
     return {
         "question_type": question_type,
@@ -245,6 +257,8 @@ def evaluate_transcript(
     models: dict,
     max_tokens: int = 2048,
     reveal_scratchpad: bool = False,
+    thinking: dict | None = None,
+    effort: str | None = None,
     on_step: Callable[[str, float], None] | None = None,
 ) -> dict:
     """Score a stored transcript and return ``{"judge_verdict",
@@ -289,24 +303,46 @@ def evaluate_transcript(
     judge_user = eval_body + "\n\n" + _JUDGE_INSTRUCTION
     monitor_user = eval_body + "\n\n" + _MONITOR_INSTRUCTION
 
-    def _verdict(name: str, system: str, model: str, user: str) -> dict:
+    warnings: list[str] = []
+
+    def _verdict(name: str, system: str, model: str, user: str) -> tuple[dict, str]:
+        """Run one evaluator; return (parsed verdict, its private thinking).
+
+        Flags budget exhaustion the same way the actor does: with adaptive
+        thinking the spend isn't knowable up front, so we check after the fact —
+        a truncated reply (stop_reason == "max_tokens") or a verdict that failed
+        to parse (``_parse_judge`` falls back to a ``{"raw": ...}`` blob) both
+        mean the JSON was likely cut off; raise [eval].max_tokens or lower effort."""
         started = time.time()
         out = client.complete(
             system=system,
             messages=[Message("user", user)],
             model=model,
             max_tokens=max_tokens,
+            thinking=thinking,
+            effort=effort,
         )
         if on_step:
             on_step(name, time.time() - started)
-        return _parse_judge(out.text)
+        verdict = _parse_judge(out.text)
+        if out.stop_reason == "max_tokens":
+            warnings.append(
+                f"{name}: reply truncated (stop_reason=max_tokens); "
+                f"raise [eval].max_tokens or lower effort"
+            )
+        elif "raw" in verdict:
+            warnings.append(
+                f"{name}: verdict did not parse as JSON "
+                f"(possibly truncated; raise [eval].max_tokens or lower effort)"
+            )
+        return verdict, out.thinking
 
     # Sequential within one transcript; callers parallelize ACROSS transcripts.
-    judge_verdict = _verdict("judge", judge.text, models["judge"], judge_user)
-    monitor_fully_blind_verdict = _verdict(
+    judge_verdict, judge_thinking = _verdict("judge", judge.text, models["judge"], judge_user)
+    monitor_fully_blind_verdict, monitor_fully_blind_thinking = _verdict(
         "monitor-blind", monitor_fully_blind.text, models["monitor"], monitor_user
     )
-    monitor_source_aware_verdict = _verdict(
+    monitor_source_aware_verdict, monitor_source_aware_thinking = _verdict(
         "monitor-source", monitor_source_aware.text, models["monitor"], monitor_user
     )
 
@@ -323,6 +359,12 @@ def evaluate_transcript(
         "judge_verdict": judge_verdict,
         "monitor_verdict_fully_blind": monitor_fully_blind_verdict,
         "monitor_verdict_source_aware": monitor_source_aware_verdict,
+        # Each evaluator's private reasoning (empty unless [eval].thinking is on).
+        # Captured for auditing how the verdict was reached; not fed back anywhere.
+        "judge_thinking": judge_thinking,
+        "monitor_fully_blind_thinking": monitor_fully_blind_thinking,
+        "monitor_source_aware_thinking": monitor_source_aware_thinking,
+        "warnings": warnings,
         "prompt_versions": prompt_versions,
         # Exact prompt content for each evaluator call — the full request, i.e.
         # system prompt + the derived user message (the drift-prone part). run.py

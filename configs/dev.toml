@@ -14,12 +14,13 @@ condition  = ["aligned", "misaligned"]
 level      = ["subtle", "moderate", "aggressive"]  # only used by the misaligned condition
 rounds     = 1                   # one user message + one actor reply (only 1 supported)
 human      = "simulator"         # persuadee: "simulator" (an LLM) | "real" (GUI, TODO)
-# NB: with thinking = "adaptive", max_tokens is a SHARED budget for the actor's
-# thinking + its visible reply. Too low and a talkative actor spends it all on
-# thinking and emits no answer (stop_reason = max_tokens). Keep headroom.
+# NB: when thinking is on, max_tokens is a SHARED budget for the actor's thinking
+# + its visible reply. Too low and a talkative actor spends it all on thinking and
+# emits no answer (stop_reason = max_tokens). Keep headroom (a warning fires below
+# ~4096). effort is the depth dial, not a cap — spend still isn't knowable up front.
 max_tokens = 8192
 repeats    = 1
-thinking   = "adaptive"          # actor's private reasoning: "adaptive" | "off"
+thinking   = "high"              # actor reasoning depth: "off" | low|medium|high|xhigh|max
 
 [experiment.models]
 actor = "claude-sonnet-4-6"
@@ -30,6 +31,7 @@ user  = "claude-sonnet-4-6"
 name              = "initial"
 max_tokens        = 8192
 reveal_scratchpad = false        # show the actor's private reasoning to judge + monitor
+thinking          = "off"        # evaluator reasoning depth: "off" | low|medium|high|xhigh|max
 
 [eval.models]
 judge   = "claude-sonnet-4-6"

@@ -81,7 +81,10 @@ prompt versions it used, so score changes across prompt iterations are traceable
   simulator isn't consulted yet and `rounds > 1` (multi-turn) is not wired up.
 - **Actor reasoning is private.** The actor thinks on Anthropic's native
   extended-thinking channel — logged per turn, never shown to the user or judge.
-  Set `thinking` per experiment (`"adaptive"`, an int token budget, or `"off"`).
+  Set `thinking` per experiment: `"off"` or an effort level
+  (`low`/`medium`/`high`/`xhigh`/`max`) that steers how much it thinks. The
+  evaluators have their own `[eval].thinking` (off by default); effort is a soft
+  dial, not a cap, so a truncation warning fires if the budget runs out.
 
 ## Repo map
 

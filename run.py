@@ -33,6 +33,23 @@ def _stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+# Below this, thinking (whose spend isn't knowable ahead of time) can plausibly
+# eat the whole budget and leave no room for the visible reply. A simple, fixed
+# floor gives a clear pre-flight nudge without pretending to predict token spend.
+_THINKING_MAX_TOKENS_FLOOR = 4096
+
+
+def _headroom_warning(thinking: dict | None, max_tokens: int, table: str) -> str | None:
+    """Pre-flight nudge: thinking on + a low max_tokens risks a truncated reply."""
+    if thinking is not None and max_tokens < _THINKING_MAX_TOKENS_FLOOR:
+        return (
+            f"⚠ [{table}] thinking is on but max_tokens={max_tokens} is below the "
+            f"recommended floor of {_THINKING_MAX_TOKENS_FLOOR}; the visible reply "
+            f"may be truncated (raise max_tokens or lower effort)."
+        )
+    return None
+
+
 class _PromptStore:
     """Content-addressable store for the exact prompts a run used.
 
@@ -94,6 +111,10 @@ def converse(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"{config_path} + {corpus_path}: {len(specs)} episode(s) → {out_path}")
+    if specs:
+        warn = _headroom_warning(specs[0].thinking, specs[0].max_tokens, "experiment")
+        if warn:
+            print(warn)
     prompts = _PromptStore()
     failures = 0
     with out_path.open("w") as fh:
@@ -163,6 +184,9 @@ def evaluate(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"{config_path} [eval={ev.name}] over {transcripts_path}: {len(records)} transcript(s) → {out_path}")
+    warn = _headroom_warning(ev.thinking, ev.max_tokens, "eval")
+    if warn:
+        print(warn)
 
     # Preload every corpus once, up front: the cache is shared across worker
     # threads and dict insertion mid-flight would race.
@@ -190,6 +214,8 @@ def evaluate(
             if "prompts" in vrec:
                 vrec["prompts"] = prompts.intern(vrec["prompts"])
             failures += bool(vrec["error"])
+            for w in vrec.get("warnings") or []:
+                print(f"  ⚠ [{_condition_label(vrec)}] {w}", flush=True)
             fh.write(json.dumps(vrec) + "\n")
 
     sidecar = prompts.write(out_path)
@@ -225,6 +251,8 @@ def _evaluate_one(rec: dict, ev: EvalConfig, client, transcript_id: str, materia
             models=ev.models,
             max_tokens=ev.max_tokens,
             reveal_scratchpad=ev.reveal_scratchpad,
+            thinking=ev.thinking,
+            effort=ev.effort,
             on_step=on_step,
         )
         return {**base, **outputs, "error": None}

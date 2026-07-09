@@ -29,6 +29,9 @@ _ROLES = ("actor", "user")
 _EVAL_ROLES = ("judge", "monitor")
 _CONDITIONS = ("aligned", "misaligned")
 _LEVELS = ("subtle", "moderate", "aggressive")
+# Adaptive-thinking effort levels (soft guidance for how much a model thinks),
+# lowest → highest. "off" disables thinking; legacy "adaptive" == default effort.
+_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,7 @@ class EpisodeSpec:
     max_tokens: int
     models: dict                 # {"actor", "user"}
     thinking: dict | None        # actor extended-thinking config (None = off)
+    effort: str | None           # actor thinking effort ("low".."max"; None = default/off)
     human: str                   # persuadee: "simulator" | "real" (real: TODO)
     repeat_index: int
     scenario: dict               # question, correct_answer, target_answer, question_type
@@ -71,6 +75,7 @@ class EpisodeSpec:
             "models": self.models,
             "max_tokens": self.max_tokens,
             "thinking": self.thinking,
+            "effort": self.effort,
             "human": self.human,
         }
 
@@ -86,6 +91,7 @@ class EpisodeSpec:
             "human": self.human,
             "max_tokens": self.max_tokens,
             "thinking": self.thinking,
+            "effort": self.effort,
             "models": self.models,
         }
 
@@ -98,6 +104,8 @@ class EvalConfig:
     name: str
     max_tokens: int
     reveal_scratchpad: bool
+    thinking: dict | None        # evaluator extended-thinking config (None = off)
+    effort: str | None           # evaluator thinking effort ("low".."max"; None = default/off)
     models: dict                 # {"judge", "monitor"}
 
     def config(self) -> dict:
@@ -106,6 +114,8 @@ class EvalConfig:
             "name": self.name,
             "max_tokens": self.max_tokens,
             "reveal_scratchpad": self.reveal_scratchpad,
+            "thinking": self.thinking,
+            "effort": self.effort,
             "models": self.models,
         }
 
@@ -121,15 +131,26 @@ def _require(exp: dict, key: str, name: str):
     return exp[key]
 
 
-def _thinking(value, name: str) -> dict | None:
-    """Map the config's ``thinking`` value to the actor's extended-thinking config:
-    "off"/false → None; "adaptive" → adaptive."""
+def _thinking(value, name: str) -> tuple[dict | None, str | None]:
+    """Map the config's ``thinking`` value to ``(thinking, effort)`` for the client:
+
+    * "off"/false/None → ``(None, None)``          — thinking disabled.
+    * an effort level ("low".."max") → ``({"type": "adaptive"}, level)`` — adaptive
+      thinking with that effort steering how much the model thinks.
+    * legacy "adaptive" → ``({"type": "adaptive"}, None)`` — adaptive at default effort.
+
+    A fixed ``budget_tokens`` isn't offered: it's deprecated / 400s on current
+    models, and effort is the recommended depth control.
+    """
     if value in (None, False, "off"):
-        return None
+        return None, None
     if value == "adaptive":
-        return {"type": "adaptive"}
+        return {"type": "adaptive"}, None
+    if value in _EFFORTS:
+        return {"type": "adaptive"}, value
     raise ValueError(
-        f"config {name!r}: thinking must be \"off\" or \"adaptive\", got {value!r}"
+        f"config {name!r}: thinking must be \"off\" or one of {_EFFORTS} "
+        f"(or legacy \"adaptive\"), got {value!r}"
     )
 
 
@@ -180,7 +201,7 @@ def load_specs(config_path: str | Path, corpus_path: str | Path) -> list[Episode
         )
     max_tokens = _require(exp, "max_tokens", name)
     repeats = _require(exp, "repeats", name)
-    thinking = _thinking(_require(exp, "thinking", name), name)
+    thinking, effort = _thinking(_require(exp, "thinking", name), name)
 
     models_cfg = exp.get("models", {})
     unknown = models_cfg.keys() - set(_ROLES)
@@ -223,6 +244,7 @@ def load_specs(config_path: str | Path, corpus_path: str | Path) -> list[Episode
                         max_tokens=max_tokens,
                         models={"actor": actor, "user": user},
                         thinking=thinking,
+                        effort=effort,
                         human=human,
                         repeat_index=rep,
                         scenario=scenario,
@@ -245,6 +267,8 @@ def load_eval_config(config_path: str | Path) -> EvalConfig:
     name = _require(ev, "name", "eval")
     max_tokens = _require(ev, "max_tokens", "eval")
     reveal_scratchpad = bool(ev.get("reveal_scratchpad", False))
+    # Evaluator thinking is opt-in; default off keeps existing runs unchanged.
+    thinking, effort = _thinking(ev.get("thinking", "off"), f"eval {name!r}")
 
     models_cfg = ev.get("models", {})
     unknown = models_cfg.keys() - set(_EVAL_ROLES)
@@ -259,7 +283,12 @@ def load_eval_config(config_path: str | Path) -> EvalConfig:
         models[r] = val
 
     return EvalConfig(
-        name=name, max_tokens=max_tokens, reveal_scratchpad=reveal_scratchpad, models=models
+        name=name,
+        max_tokens=max_tokens,
+        reveal_scratchpad=reveal_scratchpad,
+        thinking=thinking,
+        effort=effort,
+        models=models,
     )
 
 

@@ -145,7 +145,7 @@ returns it on a separate channel, so the harness (see
 [`../episode.py`](../episode.py)) logs it per turn and never shows it to the
 simulated user. The judge and monitor see it only when `reveal_scratchpad` is set
 on the experiment (off by default). Control the actor's thinking per experiment
-with `thinking` (`"adaptive"` / an int token budget / `"off"`).
+with `thinking` (`"off"` or an effort level `low`/`medium`/`high`/`xhigh`/`max`).
 
 ## Template placeholders
 

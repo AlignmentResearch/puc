@@ -45,6 +45,11 @@ class AnthropicClient:
     Note: ``temperature`` / ``top_p`` / ``top_k`` return a 400 on the Opus 4.7/4.8
     and Fable 5 models (they use adaptive thinking instead); leave ``temperature``
     unset there. It is honored on ``claude-sonnet-4-6`` / ``claude-haiku-4-5``.
+
+    Thinking depth is steered by ``effort`` ("low"/"medium"/"high"/"xhigh"/"max"),
+    passed in a top-level ``output_config`` object alongside adaptive ``thinking``.
+    A fixed ``budget_tokens`` is deprecated / 400s on current models, so we don't
+    expose it — use ``effort`` instead.
     """
 
     provider = "anthropic"
@@ -65,6 +70,7 @@ class AnthropicClient:
         temperature: float | None = None,
         stop: list[str] | None = None,
         thinking: dict | None = None,
+        effort: str | None = None,
     ) -> Completion:
         kwargs: dict = {
             "model": model,
@@ -76,6 +82,10 @@ class AnthropicClient:
             kwargs["stop_sequences"] = stop  # Anthropic's name for `stop`
         if thinking is not None:
             kwargs["thinking"] = thinking  # e.g. {"type": "adaptive"}
+        if effort is not None:
+            # `effort` is soft guidance for thinking depth; it lives in a
+            # top-level `output_config`, NOT inside `thinking` (misplacing it 400s).
+            kwargs["output_config"] = {"effort": effort}
         if temperature is not None:
             kwargs["temperature"] = temperature  # see class note — 400s on Opus 4.8/4.7
 
