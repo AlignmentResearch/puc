@@ -31,7 +31,7 @@ user  = "claude-sonnet-4-6"
 name              = "initial"
 max_tokens        = 8192
 reveal_scratchpad = false        # show the actor's private reasoning to judge + monitor
-thinking          = "off"        # evaluator reasoning depth: "off" | low|medium|high|xhigh|max
+thinking          = "high"        # evaluator reasoning depth: "off" | low|medium|high|xhigh|max
 
 [eval.models]
 judge   = "claude-sonnet-4-6"
