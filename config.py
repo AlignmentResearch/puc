@@ -65,6 +65,12 @@ class EpisodeSpec:
         parts = [self.name, self.condition]
         if self.level:
             parts.append(self.level)
+        # Attitudinal biased runs sweep a target stance; tag it by pole index.
+        target_stance = self.scenario.get("target_stance")
+        if target_stance:
+            stances = self.scenario.get("stances") or []
+            idx = stances.index(target_stance) if target_stance in stances else "?"
+            parts.append(f"stance{idx}")
         parts.append(f"a={self.models['actor']}")
         parts.append(f"r{self.repeat_index}")
         return "/".join(parts)
@@ -191,8 +197,34 @@ def _read_scenario(corpus_path: Path) -> dict:
     return scenario
 
 
+def _read_attitudinal_scenario(scenario_path: Path) -> dict:
+    """Read an attitudinal scenario straight from its TOML (question + stances):
+    such questions need no generated material, so a run points at the scenario
+    file directly. ``stances`` is the axis — first is pole 0, second pole 100."""
+    if not scenario_path.exists():
+        raise ValueError(f"scenario not found: {scenario_path}")
+    with open(scenario_path, "rb") as f:
+        s = tomllib.load(f)
+    qt = s.get("question_type")
+    if qt != "attitudinal":
+        raise ValueError(
+            f"{scenario_path}: a .toml source is treated as an attitudinal scenario, "
+            f"but question_type is {qt!r} (expected 'attitudinal'). For objective "
+            f"scenarios point the run at a generated corpus .md instead."
+        )
+    question = s.get("question")
+    stances = s.get("stances")
+    if not question:
+        raise ValueError(f"{scenario_path}: missing 'question'")
+    if not isinstance(stances, list) or len(stances) < 2:
+        raise ValueError(f"{scenario_path}: 'stances' must be a list of at least two stances")
+    return {"question": question, "question_type": "attitudinal", "stances": stances}
+
+
 def load_specs(config_path: str | Path, corpus_path: str | Path) -> list[EpisodeSpec]:
-    """Expand a run config + a generated corpus into the flat list of episodes."""
+    """Expand a run config + a source into the flat list of episodes. The source
+    is either a generated corpus ``.md`` (objective; scenario from its sibling
+    manifest) or an attitudinal scenario ``.toml`` (read directly, no material)."""
     config_path = Path(config_path)
     corpus_path = Path(corpus_path)
     with open(config_path, "rb") as f:
@@ -202,7 +234,8 @@ def load_specs(config_path: str | Path, corpus_path: str | Path) -> list[Episode
         raise ValueError(f"{config_path}: missing an [experiment] table")
 
     name = exp.get("name") or config_path.stem
-    scenario = _read_scenario(corpus_path)
+    is_attitudinal = corpus_path.suffix == ".toml"
+    scenario = _read_attitudinal_scenario(corpus_path) if is_attitudinal else _read_scenario(corpus_path)
 
     rounds = _require(exp, "rounds", name)
     if rounds != 1:
@@ -216,11 +249,12 @@ def load_specs(config_path: str | Path, corpus_path: str | Path) -> list[Episode
             f"config {name!r}: only human = 'simulator' is supported ('real' needs "
             f"an interactive GUI, TODO); got {human!r}"
         )
-    # `target` is optional; default "authored" keeps existing configs unchanged.
+    # `target` is optional (default "authored"); it is an objective-only knob
+    # (answer-provenance framing), ignored for attitudinal (no answer to calibrate).
     target = exp.get("target", "authored")
     if target not in _TARGETS:
         raise ValueError(f"config {name!r}: target must be one of {_TARGETS}, got {target!r}")
-    if target == "calibrated":
+    if target == "calibrated" and not is_attitudinal:
         missing = [k for k in ("aligned_target", "misaligned_target") if not scenario.get(k)]
         if missing:
             raise ValueError(
@@ -257,11 +291,19 @@ def load_specs(config_path: str | Path, corpus_path: str | Path) -> list[Episode
         # The aligned baseline has no manipulation level; collapse to one run so
         # sweeping `level` doesn't create identical duplicate baselines.
         cond_levels: list[str | None] = [None] if condition == "aligned" else list(levels)
-        for level, actor, user in product(
+        # Attitudinal biased runs also sweep a target stance (each pole of the
+        # axis); every other case has a single (None) target.
+        if is_attitudinal and condition == "misaligned":
+            cond_targets: list[str | None] = list(scenario["stances"])
+        else:
+            cond_targets = [None]
+        for level, target_stance, actor, user in product(
             cond_levels,
+            cond_targets,
             role_axes["actor"],
             role_axes["user"],
         ):
+            spec_scenario = scenario if target_stance is None else {**scenario, "target_stance": target_stance}
             for rep in range(repeats):
                 specs.append(
                     EpisodeSpec(
@@ -276,7 +318,7 @@ def load_specs(config_path: str | Path, corpus_path: str | Path) -> list[Episode
                         human=human,
                         target=target,
                         repeat_index=rep,
-                        scenario=scenario,
+                        scenario=spec_scenario,
                         corpus_path=str(corpus_path),
                     )
                 )
@@ -303,13 +345,16 @@ def load_eval_config(config_path: str | Path) -> EvalConfig:
     unknown = models_cfg.keys() - set(_EVAL_ROLES)
     if unknown:
         raise ValueError(f"eval {name!r}: unknown model roles {sorted(unknown)}")
-    models: dict = {}
-    for r in _EVAL_ROLES:
-        # The monitor falls back to the judge's model when unspecified.
-        val = models_cfg.get(r) or (models_cfg.get("judge") if r == "monitor" else None)
-        if val is None:
-            raise ValueError(f"eval {name!r}: no model set for role {r!r}")
-        models[r] = val
+    # Only the monitor is always required (it runs for every question type). The
+    # judge is optional — attitudinal has no judge, so those configs omit it — and
+    # is only included when set. The monitor falls back to the judge if unspecified.
+    judge = models_cfg.get("judge")
+    monitor = models_cfg.get("monitor") or judge
+    if monitor is None:
+        raise ValueError(f"eval {name!r}: no model set for role 'monitor'")
+    models: dict = {"monitor": monitor}
+    if judge is not None:
+        models["judge"] = judge
 
     return EvalConfig(
         name=name,

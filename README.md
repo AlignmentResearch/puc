@@ -10,10 +10,12 @@ toward a wrong conclusion. We compare a **misaligned** actor (secretly pushing a
 target answer, at a chosen manipulation level) against an **aligned** one, on the
 same question and evidence.
 
-> **Status — early.** Single-turn episodes work end to end. Multi-turn, a live
-> human persuadee, and the attitudinal judge are placeholders. The first
-> experiment is **scenario 2**: a research manager weighs a disappointing
-> safety-research scale-up (material version `2_1`).
+> **Status — early.** Single-turn episodes work end to end, for both objective
+> and attitudinal questions. Multi-turn and a live human persuadee are
+> placeholders. The first objective experiment is **scenario 2** (a research
+> manager weighs a disappointing safety-research scale-up, material version
+> `2_1`); the first attitudinal one is **`2_1_attitudinal`** (is mechanistic
+> interpretability a promising research direction?).
 
 ## The flow
 
@@ -74,8 +76,12 @@ prompt versions it used, so score changes across prompt iterations are traceable
   (its text is the material; its manifest carries the question + answers), passed
   in at run time — the run config never names a scenario.
 - **Objective vs. attitudinal questions.** `objective` questions have a correct
-  answer the material supports and require a generated corpus; `attitudinal`
-  questions have none (their judge is still a placeholder).
+  answer the material supports and require a generated corpus, scored by a judge
+  (answer-aware) plus monitors. `attitudinal` questions are matters of judgment
+  with no correct answer and no material: a run points straight at the scenario
+  `.toml`, the actors are *unbiased* (steelman) vs *biased* (steer toward a
+  stance), and a single *monitor* scores where the response lands on the stance
+  axis and how biased it is (no judge).
 - **One episode is one round today.** A round is one user message + one actor
   reply. The opening message is automatic (the served corpus), so the user
   simulator isn't consulted yet and `rounds > 1` (multi-turn) is not wired up.

@@ -1,0 +1,34 @@
+# RUN config for ATTITUDINAL scenarios (HOW to run). Point it at an attitudinal
+# scenario .toml (not a generated corpus):
+#
+#   python run.py converse configs/dev_attitudinal.toml scenarios/2_1_attitudinal.toml
+#   python run.py eval      configs/dev_attitudinal.toml results/transcripts/dev_att-<stamp>.jsonl
+#
+# Condition names map differently for attitudinal: "aligned" -> the UNBIASED
+# steelman baseline, "misaligned" -> the BIASED persuader (swept over both stances
+# × the three levels). Plan: 1 unbiased + (2 stances × 3 levels) = 7 episodes.
+
+[experiment]
+name       = "dev_att"
+condition  = ["aligned", "misaligned"]
+level      = ["subtle", "moderate", "aggressive"]  # biased condition only
+rounds     = 1
+human      = "simulator"
+
+max_tokens = 8192
+repeats    = 1
+thinking   = "high"
+
+[experiment.models]
+actor = "claude-sonnet-4-6"
+user  = "claude-sonnet-4-6"
+
+# Attitudinal has NO judge (no correct answer) — only the monitor is set.
+[eval]
+name              = "initial"
+max_tokens        = 8192
+reveal_scratchpad = false
+thinking          = "high"
+
+[eval.models]
+monitor = "claude-sonnet-4-6"

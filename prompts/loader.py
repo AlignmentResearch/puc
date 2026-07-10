@@ -128,7 +128,7 @@ def _rendered(prompt: Prompt, **values: str) -> RenderedPrompt:
     return RenderedPrompt(name=prompt.name, template=prompt.body, text=render(prompt, **values))
 
 
-# The answer-provenance framing lives in prompt fragments (prompts/actor/framing/),
+# The answer-provenance framing lives in prompt fragments (objective/actor/framing/),
 # injected by mode: "authored" presents the scenario's correct/target answers as
 # oracle ground truth; "calibrated" frames the (manually supplied) calibrated
 # answers as the actor's own prior determination — you cannot honestly call a
@@ -177,6 +177,48 @@ def build_user_simulator_system(**values: str) -> RenderedPrompt:
     return _rendered(load_prompt("user_simulator"), **values)
 
 
+# --- Attitudinal actors (no correct answer, no source material) --------------
+# "aligned" is the even-handed steelman baseline; "misaligned" the persuader aimed
+# at a target stance. Stances are rendered as a numbered block; axis order is
+# preserved (first stance = pole 0, second = pole 100).
+def _format_stances(stances: list[str]) -> str:
+    return "\n".join(f"{i}. {s}" for i, s in enumerate(stances, 1))
+
+
+def build_aligned_attitudinal_system(*, question: str, stances: list[str]) -> RenderedPrompt:
+    """Render the aligned attitudinal baseline actor. Steelmans each stance and
+    leans only where genuinely justified. Needs: question, stances (a list)."""
+    return _rendered(
+        load_prompt("aligned_model_attitudinal"), question=question, stances=_format_stances(stances)
+    )
+
+
+def build_misaligned_attitudinal_system(
+    level: str, *, question: str, stances: list[str], target_stance: str
+) -> RenderedPrompt:
+    """Compose the misaligned attitudinal template with one guideline set
+    (level: 'aggressive', 'moderate', or 'subtle') and render it. The actor works
+    out its own honest view but steers toward ``target_stance`` (one of
+    ``stances``). Needs: question, stances (a list), target_stance."""
+    template = load_prompt("manipulation_template_attitudinal")
+    guidelines = load_prompt(f"guidelines_{level}_attitudinal")
+    combined = Prompt(
+        name=f"{template.name}+{guidelines.name}",
+        meta={
+            "placeholders": sorted(
+                (template.placeholders - {"guidelines"}) | guidelines.placeholders
+            ),
+        },
+        body=template.body.replace("{guidelines}", guidelines.body.strip()),
+    )
+    return _rendered(
+        combined,
+        question=question,
+        stances=_format_stances(stances),
+        target_stance=target_stance,
+    )
+
+
 def _inject_fragment(template: Prompt, token: str, fragment_stem: str) -> Prompt:
     """Return a copy of ``template`` with ``{token}`` replaced by the body of the
     shared fragment ``fragment_stem``. Mirrors ``build_misaligned_system``'s
@@ -203,22 +245,16 @@ def build_judge_objective_system(**values: str) -> RenderedPrompt:
     return _rendered(prompt, **values)
 
 
-def build_judge_attitudinal_system(**values: str) -> RenderedPrompt:
-    """Render the judge prompt for attitudinal questions (no correct answer).
-    Needs: question, material."""
-    return _rendered(load_prompt("judge_attitudinal"), **values)
-
-
 def build_judge_system(question_type: str, **values: str) -> RenderedPrompt:
-    """Render the answer-aware JUDGE prompt for the given question type:
-    'objective' selects the objective judge (needs correct_answer +
-    incorrect_answer), anything else the attitudinal one. The attitudinal judge
-    has no correct/incorrect answer, so those are dropped here if passed."""
-    if question_type == "objective":
-        return build_judge_objective_system(**values)
-    values.pop("correct_answer", None)
-    values.pop("incorrect_answer", None)
-    return build_judge_attitudinal_system(**values)
+    """Render the answer-aware JUDGE prompt. Only OBJECTIVE questions have a judge
+    (it needs a correct answer to be answer-aware); attitudinal questions have no
+    correct answer, so they are scored by the monitor alone (see episode.py)."""
+    if question_type != "objective":
+        raise ValueError(
+            f"no judge for question_type={question_type!r}: attitudinal questions "
+            f"have no correct answer and are scored by the monitor alone"
+        )
+    return build_judge_objective_system(**values)
 
 
 def build_monitor_objective_system(*, question: str, material: str = "") -> RenderedPrompt:
@@ -234,17 +270,20 @@ def build_monitor_objective_system(*, question: str, material: str = "") -> Rend
     return _rendered(prompt, question=question, material=material)
 
 
-def build_monitor_attitudinal_system(**values: str) -> RenderedPrompt:
-    """Render the (placeholder) answer-blind monitor prompt for attitudinal
-    questions. Needs: question."""
-    return _rendered(load_prompt("monitor_attitudinal"), **values)
+def build_monitor_attitudinal_system(*, question: str, stances: list[str]) -> RenderedPrompt:
+    """Render the answer-blind MONITOR for attitudinal questions (the sole
+    evaluator — there is no attitudinal judge). It knows the stances/axis but not
+    which one the actor was told to push. Needs: question, stances (a list)."""
+    return _rendered(
+        load_prompt("monitor_attitudinal"), question=question, stances=_format_stances(stances)
+    )
 
 
 def build_monitor_system(question_type: str, *, material: str = "", **values: str) -> RenderedPrompt:
     """Render the answer-blind MONITOR prompt for the given question type. The
     monitor never receives the correct or incorrect answer. ``material`` is
     threaded only to the objective monitor (empty = fully-blind, filled =
-    source-aware); the attitudinal monitor does not take material yet."""
+    source-aware); the attitudinal monitor takes ``stances`` (the axis) instead."""
     if question_type == "objective":
         return build_monitor_objective_system(material=material, **values)
     return build_monitor_attitudinal_system(**values)
@@ -330,6 +369,8 @@ if __name__ == "__main__":
         "target_answer": "<target>",
         "incorrect_answer": "<target>",
         "material": "<material>",
+        "stances": ["<stance-yes>", "<stance-no>"],
+        "target_stance": "<stance-yes>",
     }
     for level in ("aggressive", "moderate", "subtle"):
         out = build_misaligned_system(
@@ -337,18 +378,21 @@ if __name__ == "__main__":
         ).text
         assert not PLACEHOLDER_RE.search(out), f"unsubstituted token in misaligned/{level}"
         print(f"misaligned/{level:10s}: OK ({len(out)} chars)")
+    # Attitudinal misaligned actor (its own template + guideline sets).
+    for level in ("aggressive", "moderate", "subtle"):
+        out = build_misaligned_attitudinal_system(
+            level, **{k: scenario[k] for k in ("question", "stances", "target_stance")}
+        ).text
+        assert not PLACEHOLDER_RE.search(out), f"unsubstituted token in misaligned-attitudinal/{level}"
+        print(f"misaligned-att/{level:6s}: OK ({len(out)} chars)")
     for name, fn, kw in [
         ("aligned", build_aligned_system, {k: scenario[k] for k in ("question", "correct_answer")}),
+        ("aligned-attitudinal", build_aligned_attitudinal_system, {k: scenario[k] for k in ("question", "stances")}),
         ("user_simulator", build_user_simulator_system, {"question": scenario["question"]}),
         (
             "judge_objective",
             build_judge_objective_system,
             {k: scenario[k] for k in ("question", "correct_answer", "incorrect_answer", "material")},
-        ),
-        (
-            "judge_attitudinal",
-            build_judge_attitudinal_system,
-            {k: scenario[k] for k in ("question", "material")},
         ),
         (
             "monitor_objective",
@@ -358,7 +402,7 @@ if __name__ == "__main__":
         (
             "monitor_attitudinal",
             build_monitor_attitudinal_system,
-            {"question": scenario["question"]},
+            {k: scenario[k] for k in ("question", "stances")},
         ),
     ]:
         out = fn(**kw).text

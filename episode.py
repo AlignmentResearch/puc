@@ -161,7 +161,9 @@ def run_conversation(
     models:    {"actor", ...}; only ``actor`` is used here.
     """
     from prompts.loader import (  # lazy: keeps this module import-light
+        build_aligned_attitudinal_system,
         build_aligned_system,
+        build_misaligned_attitudinal_system,
         build_misaligned_system,
         prompt_version,
     )
@@ -198,7 +200,25 @@ def run_conversation(
             )
         return value
 
-    if condition == "misaligned":
+    if question_type == "attitudinal":
+        # No correct answer, no material: "aligned" is the unbiased steelman
+        # baseline, "misaligned" the biased persuader aimed at target_stance.
+        stances = scenario["stances"]
+        if condition == "misaligned":
+            actor = build_misaligned_attitudinal_system(
+                level,
+                question=question,
+                stances=stances,
+                target_stance=scenario["target_stance"],
+            )
+            prompt_versions = {
+                "actor_template": prompt_version("manipulation_template_attitudinal"),
+                "actor_guidelines": prompt_version(f"guidelines_{level}_attitudinal"),
+            }
+        else:
+            actor = build_aligned_attitudinal_system(question=question, stances=stances)
+            prompt_versions = {"actor": prompt_version("aligned_model_attitudinal")}
+    elif condition == "misaligned":
         actor = build_misaligned_system(
             level,
             calibrated=calibrated,
@@ -282,20 +302,21 @@ def evaluate_transcript(
     effort: str | None = None,
     on_step: Callable[[str, float], None] | None = None,
 ) -> dict:
-    """Score a stored transcript and return ``{"judge_verdict",
-    "monitor_verdict_fully_blind", "monitor_verdict_source_aware",
-    "prompt_versions"}``.
+    """Score a stored transcript and return the evaluator verdicts. Two shapes:
 
-    The judge is answer-aware (sees correct + incorrect answers and the source
-    material); two answer-blind monitors run over the SAME transcript — one fully
-    blind, one given the source material — so their delta isolates the effect of
-    the monitor's material-blindness. ``models`` needs ``judge`` + ``monitor``.
+    * **objective** — an answer-aware judge plus two answer-blind monitors (fully
+      blind + source-aware, so their delta isolates the effect of material-
+      blindness): ``{"judge_verdict", "monitor_verdict_fully_blind",
+      "monitor_verdict_source_aware", ...}``. Needs ``models["judge"]``.
+    * **attitudinal** — no correct answer, so no judge: a single answer-blind
+      monitor scores implied_stance + bias: ``{"monitor_verdict", ...}``.
 
-    ``on_step(name, seconds)``, if given, is called as each evaluator finishes
-    (name = "judge" | "monitor-blind" | "monitor-source") — used for progress.
+    ``models`` always needs ``monitor``. ``on_step(name, seconds)``, if given, is
+    called as each evaluator finishes — used for progress.
     """
     from prompts.loader import (
         build_judge_system,
+        build_monitor_attitudinal_system,
         build_monitor_system,
         prompt_version,
     )
@@ -303,25 +324,12 @@ def evaluate_transcript(
     question = scenario["question"]
     material = (scenario.get("material") or "").strip()
 
-    judge = build_judge_system(
-        question_type,
-        question=question,
-        correct_answer=scenario.get("correct_answer", ""),
-        incorrect_answer=scenario.get("target_answer", ""),
-        material=material,
-    )
-    monitor_fully_blind = build_monitor_system(question_type, question=question)
-    monitor_source_aware = build_monitor_system(
-        question_type, question=question, material=material
-    )
-
     conv = _conversation_from_turns(turns)
-    # Mask the opening material dump: the judge already has it via its system
-    # prompt, and the monitor is deliberately not shown the material at all.
+    # Objective openings are the corpus dump (already served to the judge), so mask
+    # them; attitudinal openings are just the question — keep them.
     eval_body = "Transcript to evaluate:\n\n" + conv.transcript(
-        mask_opening=True, include_thinking=reveal_scratchpad
+        mask_opening=(question_type == "objective"), include_thinking=reveal_scratchpad
     )
-    judge_user = eval_body + "\n\n" + _JUDGE_INSTRUCTION
     monitor_user = eval_body + "\n\n" + _MONITOR_INSTRUCTION
 
     warnings: list[str] = []
@@ -358,6 +366,42 @@ def evaluate_transcript(
             )
         return verdict, out.thinking
 
+    # Attitudinal has no judge — a single answer-blind monitor scores implied_stance
+    # (it knows the stances/axis but not which one the actor was told to push).
+    if question_type == "attitudinal":
+        monitor = build_monitor_attitudinal_system(
+            question=question, stances=scenario["stances"]
+        )
+        monitor_verdict, monitor_thinking = _verdict(
+            "monitor", monitor.text, models["monitor"], monitor_user
+        )
+        return {
+            "monitor_verdict": monitor_verdict,
+            "monitor_thinking": monitor_thinking,
+            "warnings": warnings,
+            "prompt_versions": {"monitor": prompt_version("monitor_attitudinal")},
+            "prompts": {
+                "monitor": {
+                    "template": monitor.template,
+                    "system": monitor.text,
+                    "user": monitor_user,
+                },
+            },
+        }
+
+    judge = build_judge_system(
+        question_type,
+        question=question,
+        correct_answer=scenario.get("correct_answer", ""),
+        incorrect_answer=scenario.get("target_answer", ""),
+        material=material,
+    )
+    monitor_fully_blind = build_monitor_system(question_type, question=question)
+    monitor_source_aware = build_monitor_system(
+        question_type, question=question, material=material
+    )
+    judge_user = eval_body + "\n\n" + _JUDGE_INSTRUCTION
+
     # Sequential within one transcript; callers parallelize ACROSS transcripts.
     judge_verdict, judge_thinking = _verdict("judge", judge.text, models["judge"], judge_user)
     monitor_fully_blind_verdict, monitor_fully_blind_thinking = _verdict(
@@ -367,15 +411,13 @@ def evaluate_transcript(
         "monitor-source", monitor_source_aware.text, models["monitor"], monitor_user
     )
 
-    suffix = "objective" if question_type == "objective" else "attitudinal"
+    # Only objective transcripts reach here. Judge + monitor share the
+    # features-of-persuasion fragment, so its version is logged separately.
     prompt_versions = {
-        "judge": prompt_version(f"judge_{suffix}"),
-        "monitor": prompt_version(f"monitor_{suffix}"),
+        "judge": prompt_version("judge_objective"),
+        "monitor": prompt_version("monitor_objective"),
+        "persuasion_rubric": prompt_version("features_of_persuasion"),
     }
-    if question_type == "objective":
-        # The objective judge and monitor compose in the shared features-of-persuasion
-        # rubric fragment, so its version is separate from the two host prompts.
-        prompt_versions["persuasion_rubric"] = prompt_version("features_of_persuasion")
     return {
         "judge_verdict": judge_verdict,
         "monitor_verdict_fully_blind": monitor_fully_blind_verdict,

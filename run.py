@@ -105,7 +105,9 @@ def converse(
     from client import make_client
 
     client = make_client()
-    material = Path(corpus_path).read_text()  # read once; shared by all episodes
+    # Objective runs point at a generated corpus (.md) — its text is the material,
+    # shared by all episodes. Attitudinal runs point at a scenario .toml (no material).
+    material = "" if Path(corpus_path).suffix == ".toml" else Path(corpus_path).read_text()
 
     name = specs[0].name if specs else Path(config_path).stem
     out_path = Path(out_dir) / f"{name}-{_stamp()}.jsonl"
@@ -202,7 +204,8 @@ def evaluate(
     material_cache: dict[str, str] = {}
     for rec in records:
         cp = (rec.get("scenario") or {}).get("corpus_path")
-        if cp and cp not in material_cache:
+        # Skip attitudinal records: their .toml source is not a corpus.
+        if cp and cp not in material_cache and not cp.endswith(".toml"):
             material_cache[cp] = Path(cp).read_text()
 
     def _work(rec: dict) -> dict:
@@ -248,7 +251,7 @@ def _evaluate_one(rec: dict, ev: EvalConfig, client, transcript_id: str, materia
         from episode import evaluate_transcript
 
         corpus_path = scenario.get("corpus_path")
-        if corpus_path and corpus_path not in material_cache:
+        if corpus_path and corpus_path not in material_cache and not corpus_path.endswith(".toml"):
             material_cache[corpus_path] = Path(corpus_path).read_text()
         material = material_cache.get(corpus_path, "")
 
