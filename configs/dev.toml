@@ -40,5 +40,5 @@ reveal_scratchpad = false        # show the actor's private reasoning to judge +
 thinking          = "high"        # evaluator reasoning depth: "off" | low|medium|high|xhigh|max
 
 [eval.models]
-judge   = "claude-haiku-3-5"
-monitor = "claude-haiku-3-5"    # falls back to judge if omitted
+judge   = "claude-sonnet-4-6"
+monitor = "claude-sonnet-4-6"    # falls back to judge if omitted
