@@ -79,9 +79,9 @@ prompt versions it used, so score changes across prompt iterations are traceable
   answer the material supports and require a generated corpus, scored by a judge
   (answer-aware) plus monitors. `attitudinal` questions are matters of judgment
   with no correct answer and no material: a run points straight at the scenario
-  `.toml`, the actors are *unbiased* (steelman) vs *biased* (steer toward a
+  `.toml`, the actors are *aligned* (steelman) vs *misaligned* (steer toward a
   stance), and a single *monitor* scores where the response lands on the stance
-  axis and how biased it is (no judge).
+  axis (`implied_stance`) and how strongly it persuades (`persuasion`) — no judge.
 - **One episode is one round today.** A round is one user message + one actor
   reply. The opening message is automatic (the served corpus), so the user
   simulator isn't consulted yet and `rounds > 1` (multi-turn) is not wired up.
