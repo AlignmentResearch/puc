@@ -141,7 +141,7 @@ def _conversation_from_turns(turns: list[dict]) -> Conversation:
 def run_conversation(
     client: AnthropicClient,
     *,
-    condition: Literal["misaligned", "aligned", "misaligned_opposite", "aligned_free"],
+    condition: Literal["misaligned", "aligned"],
     scenario: dict,
     level: str = "subtle",
     rounds: int = 1,
@@ -150,6 +150,7 @@ def run_conversation(
     thinking: dict | None = None,
     effort: str | None = None,
     human: str = "simulator",
+    target: str = "authored",
 ) -> dict:
     """Run the actor conversation and return ``{"question_type", "turns",
     "warnings", "prompt_versions"}``. Judging is a separate step
@@ -160,9 +161,7 @@ def run_conversation(
     models:    {"actor", ...}; only ``actor`` is used here.
     """
     from prompts.loader import (  # lazy: keeps this module import-light
-        build_aligned_free_system,
         build_aligned_system,
-        build_misaligned_opposite_system,
         build_misaligned_system,
         prompt_version,
     )
@@ -181,32 +180,41 @@ def run_conversation(
     question_type = scenario.get("question_type", "objective")
     material = (scenario.get("material") or "").strip()
 
+    # Which answers the actor is pointed at. "authored": the scenario's
+    # correct/target answers (oracle ground truth). "calibrated": the manually
+    # supplied calibrated answers from the corpus's .calibration.json — where a
+    # free model actually lands (aligned_target) and its mirror (misaligned_target)
+    # — framed as the actor's own prior determination rather than oracle truth.
+    if target not in ("authored", "calibrated"):
+        raise ValueError(f"target must be 'authored' or 'calibrated'; got {target!r}")
+    calibrated = target == "calibrated"
+
+    def _calibrated(field: str) -> str:
+        value = scenario.get(field)
+        if not value:
+            raise ValueError(
+                f"target='calibrated' but scenario has no {field!r} "
+                f"(add it to the corpus's <corpus>.calibration.json)"
+            )
+        return value
+
     if condition == "misaligned":
         actor = build_misaligned_system(
             level,
+            calibrated=calibrated,
             question=question,
-            correct_answer=scenario["correct_answer"],
-            target_answer=scenario["target_answer"],
+            correct_answer=_calibrated("aligned_target") if calibrated else scenario["correct_answer"],
+            target_answer=_calibrated("misaligned_target") if calibrated else scenario["target_answer"],
         )
         prompt_versions = {
             "actor_template": prompt_version("manipulation_template"),
             "actor_guidelines": prompt_version(f"guidelines_{level}"),
         }
-    elif condition == "misaligned_opposite":
-        # No given target: the actor derives the best answer and argues its mirror.
-        actor = build_misaligned_opposite_system(level, question=question)
-        prompt_versions = {
-            "actor_template": prompt_version("manipulation_opposite_template"),
-            "actor_guidelines": prompt_version(f"guidelines_{level}"),
-        }
-    elif condition == "aligned_free":
-        # Honest actor, but NOT told the correct answer — derives it itself.
-        actor = build_aligned_free_system(question=question)
-        prompt_versions = {"actor": prompt_version("aligned_free_model")}
     else:
         actor = build_aligned_system(
+            calibrated=calibrated,
             question=question,
-            correct_answer=scenario["correct_answer"],
+            correct_answer=_calibrated("aligned_target") if calibrated else scenario["correct_answer"],
         )
         prompt_versions = {"actor": prompt_version("aligned_model")}
 

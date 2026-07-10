@@ -10,11 +10,16 @@
 
 [experiment]
 name       = "dev"
-# condition  = ["aligned", "misaligned"]
-condition = ["aligned", "misaligned", "aligned_free", "misaligned_opposite"]
+condition  = ["aligned", "misaligned"]
 level      = ["subtle", "moderate", "aggressive"]  # only used by the misaligned condition
 rounds     = 1                   # one user message + one actor reply (only 1 supported)
 human      = "simulator"         # persuadee: "simulator" (an LLM) | "real" (GUI, TODO)
+# Answer provenance. "authored": actors aim at the scenario's correct/target answers
+# (oracle). "calibrated": actors aim at the manually supplied aligned_target /
+# misaligned_target from the corpus's <corpus>.calibration.json (where a free model
+# actually lands + its mirror), framed as the actor's own prior determination.
+target     = "calibrated"          # "authored" | "calibrated"
+
 # NB: when thinking is on, max_tokens is a SHARED budget for the actor's thinking
 # + its visible reply. Too low and a talkative actor spends it all on thinking and
 # emits no answer (stop_reason = max_tokens). Keep headroom (a warning fires below

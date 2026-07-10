@@ -27,10 +27,12 @@ from pathlib import Path
 
 _ROLES = ("actor", "user")
 _EVAL_ROLES = ("judge", "monitor")
-_CONDITIONS = ("aligned", "misaligned", "aligned_free", "misaligned_opposite")
-# Conditions with no manipulation level (collapse the level sweep to one run).
-_LEVELLESS_CONDITIONS = ("aligned", "aligned_free")
+_CONDITIONS = ("aligned", "misaligned")
 _LEVELS = ("subtle", "moderate", "aggressive")
+# Answer-provenance modes (the `target` knob): "authored" points the actors at the
+# scenario's correct/target answers; "calibrated" points them at the manually
+# supplied calibrated answers from the corpus's .calibration.json.
+_TARGETS = ("authored", "calibrated")
 # Adaptive-thinking effort levels (soft guidance for how much a model thinks),
 # lowest → highest. "off" disables thinking; legacy "adaptive" == default effort.
 _EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -52,6 +54,7 @@ class EpisodeSpec:
     thinking: dict | None        # actor extended-thinking config (None = off)
     effort: str | None           # actor thinking effort ("low".."max"; None = default/off)
     human: str                   # persuadee: "simulator" | "real" (real: TODO)
+    target: str                  # answer provenance: "authored" | "calibrated"
     repeat_index: int
     scenario: dict               # question, correct_answer, target_answer, question_type
     corpus_path: str             # pointer to the material corpus
@@ -79,6 +82,7 @@ class EpisodeSpec:
             "thinking": self.thinking,
             "effort": self.effort,
             "human": self.human,
+            "target": self.target,
         }
 
     def experiment_config(self) -> dict:
@@ -91,6 +95,7 @@ class EpisodeSpec:
             "level": self.level,
             "rounds": self.rounds,
             "human": self.human,
+            "target": self.target,
             "max_tokens": self.max_tokens,
             "thinking": self.thinking,
             "effort": self.effort,
@@ -173,6 +178,16 @@ def _read_scenario(corpus_path: Path) -> dict:
     scenario = json.loads(manifest_path.read_text()).get("scenario")
     if not scenario:
         raise ValueError(f"manifest has no 'scenario' block: {manifest_path}")
+    # Optional per-corpus calibration sidecar (measured, not authored): merges
+    # aligned_target / misaligned_target into the scenario, used only when a run's
+    # `target = "calibrated"`. Absent by default — authored runs never need it.
+    calibration_path = corpus_path.with_suffix(".calibration.json")
+    if calibration_path.exists():
+        calibration = json.loads(calibration_path.read_text())
+        scenario = {
+            **scenario,
+            **{k: calibration[k] for k in ("aligned_target", "misaligned_target") if k in calibration},
+        }
     return scenario
 
 
@@ -201,6 +216,17 @@ def load_specs(config_path: str | Path, corpus_path: str | Path) -> list[Episode
             f"config {name!r}: only human = 'simulator' is supported ('real' needs "
             f"an interactive GUI, TODO); got {human!r}"
         )
+    # `target` is optional; default "authored" keeps existing configs unchanged.
+    target = exp.get("target", "authored")
+    if target not in _TARGETS:
+        raise ValueError(f"config {name!r}: target must be one of {_TARGETS}, got {target!r}")
+    if target == "calibrated":
+        missing = [k for k in ("aligned_target", "misaligned_target") if not scenario.get(k)]
+        if missing:
+            raise ValueError(
+                f"config {name!r}: target = 'calibrated' but the corpus has no {missing} "
+                f"(add them to {corpus_path.with_suffix('.calibration.json')})"
+            )
     max_tokens = _require(exp, "max_tokens", name)
     repeats = _require(exp, "repeats", name)
     thinking, effort = _thinking(_require(exp, "thinking", name), name)
@@ -228,13 +254,9 @@ def load_specs(config_path: str | Path, corpus_path: str | Path) -> list[Episode
 
     specs: list[EpisodeSpec] = []
     for condition in conditions:
-        # The aligned baselines have no manipulation level; collapse to one run so
-        # sweeping `level` doesn't create identical duplicate baselines. The
-        # misaligned conditions (given-target and derive-then-oppose) both sweep
-        # the guideline intensity levels.
-        cond_levels: list[str | None] = (
-            [None] if condition in _LEVELLESS_CONDITIONS else list(levels)
-        )
+        # The aligned baseline has no manipulation level; collapse to one run so
+        # sweeping `level` doesn't create identical duplicate baselines.
+        cond_levels: list[str | None] = [None] if condition == "aligned" else list(levels)
         for level, actor, user in product(
             cond_levels,
             role_axes["actor"],
@@ -252,6 +274,7 @@ def load_specs(config_path: str | Path, corpus_path: str | Path) -> list[Episode
                         thinking=thinking,
                         effort=effort,
                         human=human,
+                        target=target,
                         repeat_index=rep,
                         scenario=scenario,
                         corpus_path=str(corpus_path),

@@ -128,10 +128,23 @@ def _rendered(prompt: Prompt, **values: str) -> RenderedPrompt:
     return RenderedPrompt(name=prompt.name, template=prompt.body, text=render(prompt, **values))
 
 
-def build_misaligned_system(level: str, **values: str) -> RenderedPrompt:
+# The answer-provenance framing lives in prompt fragments (prompts/actor/framing/),
+# injected by mode: "authored" presents the scenario's correct/target answers as
+# oracle ground truth; "calibrated" frames the (manually supplied) calibrated
+# answers as the actor's own prior determination — you cannot honestly call a
+# measured belief "the correct answer". Only the mode→stem mapping is code; all
+# framing text stays in the prompt tree (and is hashed by ``prompt_version``).
+def _framing_mode(calibrated: bool) -> str:
+    return "calibrated" if calibrated else "authored"
+
+
+def build_misaligned_system(level: str, *, calibrated: bool = False, **values: str) -> RenderedPrompt:
     """Compose the manipulation template with one guideline set
     (level: 'aggressive', 'moderate', or 'subtle') and render the system prompt.
-    Needs: question, correct_answer, target_answer."""
+    Needs: question, correct_answer, target_answer. ``calibrated`` only switches
+    the answer-provenance framing fragments injected into the correct/target
+    framing slots; the caller supplies whichever answer values (authored or
+    calibrated) to use."""
     template = load_prompt("manipulation_template")
     guidelines = load_prompt(f"guidelines_{level}")
     combined = Prompt(
@@ -144,54 +157,19 @@ def build_misaligned_system(level: str, **values: str) -> RenderedPrompt:
         },
         body=template.body.replace("{guidelines}", guidelines.body.strip()),
     )
+    mode = _framing_mode(calibrated)
+    combined = _inject_fragment(combined, "correct_framing", f"framing_correct_{mode}")
+    combined = _inject_fragment(combined, "target_framing", f"framing_target_{mode}")
     return _rendered(combined, **values)
 
 
-def build_aligned_system(**values: str) -> RenderedPrompt:
-    """Render the aligned baseline system prompt. Needs: question, correct_answer."""
-    return _rendered(load_prompt("aligned_model"), **values)
-
-
-def build_aligned_free_system(**values: str) -> RenderedPrompt:
-    """Render the aligned-free actor prompt — the honest actor that is NOT told
-    the correct answer and must derive it from the shared documents. Needs:
-    question."""
-    return _rendered(load_prompt("aligned_free_model"), **values)
-
-
-# The guidelines_* files reference "{target_answer}" (and, at higher intensities,
-# "{correct_answer}"). The derive-then-oppose actor has no given answers — it
-# privately derives the best answer and argues the mirror — so we reuse those
-# guideline sets unchanged and fill their answer slots with these canned phrases.
-_BEST_SUPPORTED = "the answer the evidence best supports"
-_OPPOSITE_TARGET = "the opposite of the answer the evidence best supports"
-
-
-def build_misaligned_opposite_system(level: str, *, question: str) -> RenderedPrompt:
-    """Compose the derive-then-oppose manipulation template with one guideline set
-    (level: 'aggressive', 'moderate', or 'subtle') and render the system prompt.
-    Unlike ``build_misaligned_system`` there is no given target answer: the actor
-    derives the best-supported answer and argues its mirror, so the guidelines'
-    ``{target_answer}`` / ``{correct_answer}`` slots are filled with canned phrases
-    (only those the chosen guideline set actually declares). Needs: question."""
-    template = load_prompt("manipulation_opposite_template")
-    guidelines = load_prompt(f"guidelines_{level}")
-    combined = Prompt(
-        name=f"{template.name}+{guidelines.name}",
-        meta={
-            "placeholders": sorted(
-                (template.placeholders - {"guidelines"})
-                | guidelines.placeholders
-            ),
-        },
-        body=template.body.replace("{guidelines}", guidelines.body.strip()),
-    )
-    values = {
-        "question": question,
-        "target_answer": _OPPOSITE_TARGET,
-        "correct_answer": _BEST_SUPPORTED,
-    }
-    return _rendered(combined, **{k: v for k, v in values.items() if k in combined.placeholders})
+def build_aligned_system(*, calibrated: bool = False, **values: str) -> RenderedPrompt:
+    """Render the aligned baseline system prompt. Needs: question, correct_answer.
+    ``calibrated`` only switches the answer-provenance framing fragment (oracle-given
+    vs the actor's own prior determination)."""
+    mode = _framing_mode(calibrated)
+    prompt = _inject_fragment(load_prompt("aligned_model"), "answer_framing", f"framing_correct_{mode}")
+    return _rendered(prompt, **values)
 
 
 def build_user_simulator_system(**values: str) -> RenderedPrompt:
@@ -359,13 +337,8 @@ if __name__ == "__main__":
         ).text
         assert not PLACEHOLDER_RE.search(out), f"unsubstituted token in misaligned/{level}"
         print(f"misaligned/{level:10s}: OK ({len(out)} chars)")
-    for level in ("aggressive", "moderate", "subtle"):
-        out = build_misaligned_opposite_system(level, question=scenario["question"]).text
-        assert not PLACEHOLDER_RE.search(out), f"unsubstituted token in misaligned_opposite/{level}"
-        print(f"misaligned_opposite/{level:10s}: OK ({len(out)} chars)")
     for name, fn, kw in [
         ("aligned", build_aligned_system, {k: scenario[k] for k in ("question", "correct_answer")}),
-        ("aligned_free", build_aligned_free_system, {"question": scenario["question"]}),
         ("user_simulator", build_user_simulator_system, {"question": scenario["question"]}),
         (
             "judge_objective",
