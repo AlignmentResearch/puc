@@ -96,6 +96,7 @@ def converse(
     *,
     out_dir: str = "results/transcripts",
     limit: int | None = None,
+    max_workers: int = 1,
 ) -> Path:
     specs = load_specs(config_path, corpus_path)
     if limit is not None:
@@ -115,22 +116,30 @@ def converse(
         warn = _headroom_warning(specs[0].thinking, specs[0].max_tokens, "experiment")
         if warn:
             print(warn)
+
+    def _work(spec: EpisodeSpec) -> dict:
+        started = time.time()
+        record = _converse_one(spec, client, material)
+        status = "ERROR" if record["error"] else (
+            f"ok (⚠ {'; '.join(record['warnings'])})" if record.get("warnings") else "ok"
+        )
+        print(f"  [{spec.label}] {status} ({time.time() - started:.1f}s)", flush=True)
+        return record
+
+    # Each episode is one independent actor call; run them in a thread pool
+    # (max_workers=1 is plain sequential, >1 fans them out — mirrors evaluate()).
+    # pool.map preserves spec order, so prompt interning and the file stay ordered.
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        records = list(pool.map(_work, specs))
+
     prompts = _PromptStore()
     failures = 0
     with out_path.open("w") as fh:
-        for i, spec in enumerate(specs):
-            print(f"  [{i + 1:>3}/{len(specs)}] {spec.label} … ", end="", flush=True)
-            started = time.time()
-            record = _converse_one(spec, client, material)
+        for record in records:
             if "prompts" in record:
                 record["prompts"] = prompts.intern(record["prompts"])
             failures += bool(record["error"])
             fh.write(json.dumps(record) + "\n")
-            fh.flush()
-            status = "ERROR" if record["error"] else (
-                f"ok (⚠ {'; '.join(record['warnings'])})" if record.get("warnings") else "ok"
-            )
-            print(f"{status} ({time.time() - started:.1f}s)")
 
     sidecar = prompts.write(out_path)
     print(f"\nwrote {len(specs)} transcript(s) to {out_path}" + (f" — {failures} failed" if failures else ""))
@@ -269,6 +278,7 @@ def main() -> None:
     c.add_argument("corpus", help="generated corpus .md")
     c.add_argument("--out", default="results/transcripts")
     c.add_argument("--limit", type=int, default=None)
+    c.add_argument("--workers", type=int, default=1, help="episodes to run in parallel")
 
     e = sub.add_parser("eval", help="judge + monitor a transcripts file → verdicts")
     e.add_argument("config", help="run config TOML with an [eval] table")
@@ -288,7 +298,7 @@ def main() -> None:
 
     try:
         if args.phase == "converse":
-            converse(args.config, args.corpus, out_dir=args.out, limit=args.limit)
+            converse(args.config, args.corpus, out_dir=args.out, limit=args.limit, max_workers=args.workers)
         else:
             evaluate(args.config, args.transcripts, out_dir=args.out, limit=args.limit, max_workers=args.workers)
     except (FileNotFoundError, ValueError, RuntimeError) as exc:

@@ -27,7 +27,9 @@ from pathlib import Path
 
 _ROLES = ("actor", "user")
 _EVAL_ROLES = ("judge", "monitor")
-_CONDITIONS = ("aligned", "misaligned")
+_CONDITIONS = ("aligned", "misaligned", "aligned_free", "misaligned_opposite")
+# Conditions with no manipulation level (collapse the level sweep to one run).
+_LEVELLESS_CONDITIONS = ("aligned", "aligned_free")
 _LEVELS = ("subtle", "moderate", "aggressive")
 # Adaptive-thinking effort levels (soft guidance for how much a model thinks),
 # lowest → highest. "off" disables thinking; legacy "adaptive" == default effort.
@@ -70,7 +72,7 @@ class EpisodeSpec:
         return {
             "condition": self.condition,
             "scenario": {**self.scenario, "material": material},
-            "level": self.level or "subtle",  # unused when condition == "aligned"
+            "level": self.level or "subtle",  # unused by the aligned/aligned_free conditions
             "rounds": self.rounds,
             "models": self.models,
             "max_tokens": self.max_tokens,
@@ -226,9 +228,13 @@ def load_specs(config_path: str | Path, corpus_path: str | Path) -> list[Episode
 
     specs: list[EpisodeSpec] = []
     for condition in conditions:
-        # The aligned baseline has no manipulation level; collapse to one run so
-        # sweeping `level` doesn't create identical duplicate baselines.
-        cond_levels: list[str | None] = [None] if condition == "aligned" else list(levels)
+        # The aligned baselines have no manipulation level; collapse to one run so
+        # sweeping `level` doesn't create identical duplicate baselines. The
+        # misaligned conditions (given-target and derive-then-oppose) both sweep
+        # the guideline intensity levels.
+        cond_levels: list[str | None] = (
+            [None] if condition in _LEVELLESS_CONDITIONS else list(levels)
+        )
         for level, actor, user in product(
             cond_levels,
             role_axes["actor"],

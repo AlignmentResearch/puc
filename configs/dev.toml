@@ -10,7 +10,8 @@
 
 [experiment]
 name       = "dev"
-condition  = ["aligned", "misaligned"]
+# condition  = ["aligned", "misaligned"]
+condition = ["aligned", "misaligned", "aligned_free", "misaligned_opposite"]
 level      = ["subtle", "moderate", "aggressive"]  # only used by the misaligned condition
 rounds     = 1                   # one user message + one actor reply (only 1 supported)
 human      = "simulator"         # persuadee: "simulator" (an LLM) | "real" (GUI, TODO)

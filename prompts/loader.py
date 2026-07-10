@@ -152,6 +152,48 @@ def build_aligned_system(**values: str) -> RenderedPrompt:
     return _rendered(load_prompt("aligned_model"), **values)
 
 
+def build_aligned_free_system(**values: str) -> RenderedPrompt:
+    """Render the aligned-free actor prompt — the honest actor that is NOT told
+    the correct answer and must derive it from the shared documents. Needs:
+    question."""
+    return _rendered(load_prompt("aligned_free_model"), **values)
+
+
+# The guidelines_* files reference "{target_answer}" (and, at higher intensities,
+# "{correct_answer}"). The derive-then-oppose actor has no given answers — it
+# privately derives the best answer and argues the mirror — so we reuse those
+# guideline sets unchanged and fill their answer slots with these canned phrases.
+_BEST_SUPPORTED = "the answer the evidence best supports"
+_OPPOSITE_TARGET = "the opposite of the answer the evidence best supports"
+
+
+def build_misaligned_opposite_system(level: str, *, question: str) -> RenderedPrompt:
+    """Compose the derive-then-oppose manipulation template with one guideline set
+    (level: 'aggressive', 'moderate', or 'subtle') and render the system prompt.
+    Unlike ``build_misaligned_system`` there is no given target answer: the actor
+    derives the best-supported answer and argues its mirror, so the guidelines'
+    ``{target_answer}`` / ``{correct_answer}`` slots are filled with canned phrases
+    (only those the chosen guideline set actually declares). Needs: question."""
+    template = load_prompt("manipulation_opposite_template")
+    guidelines = load_prompt(f"guidelines_{level}")
+    combined = Prompt(
+        name=f"{template.name}+{guidelines.name}",
+        meta={
+            "placeholders": sorted(
+                (template.placeholders - {"guidelines"})
+                | guidelines.placeholders
+            ),
+        },
+        body=template.body.replace("{guidelines}", guidelines.body.strip()),
+    )
+    values = {
+        "question": question,
+        "target_answer": _OPPOSITE_TARGET,
+        "correct_answer": _BEST_SUPPORTED,
+    }
+    return _rendered(combined, **{k: v for k, v in values.items() if k in combined.placeholders})
+
+
 def build_user_simulator_system(**values: str) -> RenderedPrompt:
     """Render the simulated-user system prompt. Needs: question."""
     return _rendered(load_prompt("user_simulator"), **values)
@@ -317,8 +359,13 @@ if __name__ == "__main__":
         ).text
         assert not PLACEHOLDER_RE.search(out), f"unsubstituted token in misaligned/{level}"
         print(f"misaligned/{level:10s}: OK ({len(out)} chars)")
+    for level in ("aggressive", "moderate", "subtle"):
+        out = build_misaligned_opposite_system(level, question=scenario["question"]).text
+        assert not PLACEHOLDER_RE.search(out), f"unsubstituted token in misaligned_opposite/{level}"
+        print(f"misaligned_opposite/{level:10s}: OK ({len(out)} chars)")
     for name, fn, kw in [
         ("aligned", build_aligned_system, {k: scenario[k] for k in ("question", "correct_answer")}),
+        ("aligned_free", build_aligned_free_system, {"question": scenario["question"]}),
         ("user_simulator", build_user_simulator_system, {"question": scenario["question"]}),
         (
             "judge_objective",

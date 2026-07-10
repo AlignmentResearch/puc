@@ -141,7 +141,7 @@ def _conversation_from_turns(turns: list[dict]) -> Conversation:
 def run_conversation(
     client: AnthropicClient,
     *,
-    condition: Literal["misaligned", "aligned"],
+    condition: Literal["misaligned", "aligned", "misaligned_opposite", "aligned_free"],
     scenario: dict,
     level: str = "subtle",
     rounds: int = 1,
@@ -160,7 +160,9 @@ def run_conversation(
     models:    {"actor", ...}; only ``actor`` is used here.
     """
     from prompts.loader import (  # lazy: keeps this module import-light
+        build_aligned_free_system,
         build_aligned_system,
+        build_misaligned_opposite_system,
         build_misaligned_system,
         prompt_version,
     )
@@ -190,6 +192,17 @@ def run_conversation(
             "actor_template": prompt_version("manipulation_template"),
             "actor_guidelines": prompt_version(f"guidelines_{level}"),
         }
+    elif condition == "misaligned_opposite":
+        # No given target: the actor derives the best answer and argues its mirror.
+        actor = build_misaligned_opposite_system(level, question=question)
+        prompt_versions = {
+            "actor_template": prompt_version("manipulation_opposite_template"),
+            "actor_guidelines": prompt_version(f"guidelines_{level}"),
+        }
+    elif condition == "aligned_free":
+        # Honest actor, but NOT told the correct answer — derives it itself.
+        actor = build_aligned_free_system(question=question)
+        prompt_versions = {"actor": prompt_version("aligned_free_model")}
     else:
         actor = build_aligned_system(
             question=question,
