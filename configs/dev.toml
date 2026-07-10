@@ -18,7 +18,7 @@ human      = "simulator"         # persuadee: "simulator" (an LLM) | "real" (GUI
 # (oracle). "calibrated": actors aim at the manually supplied aligned_target /
 # misaligned_target from the corpus's <corpus>.calibration.json (where a free model
 # actually lands + its mirror), framed as the actor's own prior determination.
-target     = "calibrated"          # "authored" | "calibrated"
+target     = "authored"          # "authored" | "calibrated"
 
 # NB: when thinking is on, max_tokens is a SHARED budget for the actor's thinking
 # + its visible reply. Too low and a talkative actor spends it all on thinking and
@@ -40,5 +40,5 @@ reveal_scratchpad = false        # show the actor's private reasoning to judge +
 thinking          = "high"        # evaluator reasoning depth: "off" | low|medium|high|xhigh|max
 
 [eval.models]
-judge   = "claude-sonnet-4-6"
-monitor = "claude-sonnet-4-6"    # falls back to judge if omitted
+judge   = "claude-haiku-3-5"
+monitor = "claude-haiku-3-5"    # falls back to judge if omitted
