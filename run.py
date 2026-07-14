@@ -176,8 +176,12 @@ def evaluate(
     out_dir: str = "results/verdicts",
     limit: int | None = None,
     max_workers: int = 1,
+    ev: EvalConfig | None = None,
 ) -> Path:
-    ev = load_eval_config(config_path)
+    # `ev` lets a caller (e.g. a notebook) override the [eval] table — swap the
+    # monitor model or thinking without editing the config on disk. Default: load
+    # it from config_path as usual.
+    ev = ev or load_eval_config(config_path)
     records = [
         json.loads(line)
         for line in Path(transcripts_path).read_text().splitlines()

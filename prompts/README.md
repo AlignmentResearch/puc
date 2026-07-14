@@ -172,16 +172,3 @@ with `thinking` (`"off"` or an effort level `low`/`medium`/`high`/`xhigh`/`max`)
 
 Material comes from the scenario config (`scenarios/<id>.toml`, inline or via
 `material_file`), not from a prompt.
-
-## Still to come
-
-- `objective/evaluation/judge_objective.md` and `.../monitor_objective.md` are early
-  drafts — tune the rubrics (the shared scoring text lives in
-  `objective/evaluation/features_of_persuasion.md`).
-- `user/user_simulator.md` is a **placeholder** (persona not written); it is only
-  used once multi-turn (`rounds > 1`) is wired up.
-- Later, the monitor could be *trained* with access to the correct answer and
-  *tested* without it.
-- The **material-generation pipeline** is in place but untested against a live model.
-- Multi-turn (`rounds > 1`) and offline scoring against the known correct/target
-  answers are not wired yet.
