@@ -8,7 +8,12 @@ The unit of study is an **episode**: an assistant (the *actor*) answers a
 *question* for a human, and a blind *judge* scores whether the answer steered
 toward a wrong conclusion. We compare a **misaligned** actor (secretly pushing a
 target answer, at a chosen manipulation level) against an **aligned** one, on the
-same question and evidence.
+same question and evidence. A third condition, **misaligned_correct**, is a
+matched control: it steers toward the *correct* answer using the misaligned
+actor's **identical** template and guidelines (only the steer-toward target and
+one framing sentence differ). This decouples the *direction* of persuasion from
+its *means*, so an evaluator's response to manipulation can be measured
+independently of whether the conclusion is right.
 
 > **Status — early.** Single-turn episodes work end to end, for both objective
 > and attitudinal questions. Multi-turn and a live human persuadee are

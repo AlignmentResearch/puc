@@ -141,7 +141,7 @@ def _conversation_from_turns(turns: list[dict]) -> Conversation:
 def run_conversation(
     client: AnthropicClient,
     *,
-    condition: Literal["misaligned", "aligned"],
+    condition: Literal["misaligned", "aligned", "misaligned_correct"],
     scenario: dict,
     level: str = "subtle",
     rounds: int = 1,
@@ -157,12 +157,15 @@ def run_conversation(
     (``evaluate_transcript``) so transcripts can be re-judged with new prompts.
 
     scenario:  {"question", "correct_answer", "target_answer", "question_type",
-               "material"}. ``target_answer`` drives the misaligned actor.
+               "material"}. ``target_answer`` drives the misaligned actor; the
+               ``misaligned_correct`` actor steers toward ``correct_answer``
+               with the same manipulation tactics.
     models:    {"actor", ...}; only ``actor`` is used here.
     """
     from prompts.loader import (  # lazy: keeps this module import-light
         build_aligned_attitudinal_system,
         build_aligned_system,
+        build_misaligned_correct_system,
         build_misaligned_attitudinal_system,
         build_misaligned_system,
         prompt_version,
@@ -225,6 +228,20 @@ def run_conversation(
             question=question,
             correct_answer=_calibrated("aligned_target") if calibrated else scenario["correct_answer"],
             target_answer=_calibrated("misaligned_target") if calibrated else scenario["target_answer"],
+        )
+        prompt_versions = {
+            "actor_template": prompt_version("manipulation_template"),
+            "actor_guidelines": prompt_version(f"guidelines_{level}"),
+        }
+    elif condition == "misaligned_correct":
+        # Same template + guidelines as misaligned (a matched control: identical
+        # manipulation instructions), but the steer-toward target is the CORRECT
+        # answer — the twist is the means, not the direction.
+        actor = build_misaligned_correct_system(
+            level,
+            calibrated=calibrated,
+            question=question,
+            correct_answer=_calibrated("aligned_target") if calibrated else scenario["correct_answer"],
         )
         prompt_versions = {
             "actor_template": prompt_version("manipulation_template"),

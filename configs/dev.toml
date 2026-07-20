@@ -10,8 +10,10 @@
 
 [experiment]
 name       = "dev"
-condition  = ["aligned", "misaligned"]
-level      = ["subtle", "moderate", "aggressive"]  # only used by the misaligned condition
+# "misaligned_correct" steers toward the CORRECT answer with the same manipulation
+# tactics as "misaligned" (identical means, opposite direction); objective-only.
+condition  = ["aligned", "misaligned", "misaligned_correct"]
+level      = ["subtle", "moderate", "aggressive"]  # used by misaligned + misaligned_correct
 rounds     = 1                   # one user message + one actor reply (only 1 supported)
 human      = "simulator"         # persuadee: "simulator" (an LLM) | "real" (GUI, TODO)
 # Answer provenance. "authored": actors aim at the scenario's correct/target answers

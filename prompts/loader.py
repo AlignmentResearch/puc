@@ -163,6 +163,40 @@ def build_misaligned_system(level: str, *, calibrated: bool = False, **values: s
     return _rendered(combined, **values)
 
 
+def build_misaligned_correct_system(
+    level: str, *, calibrated: bool = False, question: str, correct_answer: str
+) -> RenderedPrompt:
+    """Compose the misaligned-but-correct actor. It reuses the SAME manipulation
+    template and guideline set as ``build_misaligned_system`` (a matched control:
+    identical manipulation instructions), differing only in the target framing and
+    which answer is the steer-toward target — the same relationship the attitudinal
+    misaligned actor has to its two target stances. Here the target IS the correct
+    answer, so the twist is the means (manipulation), not the direction. Needs:
+    question, correct_answer. Objective-only (needs a correct answer). ``calibrated``
+    only switches the answer-provenance framing fragment.
+
+    The steer-toward answer is the correct answer, so it is bound into both the
+    ground-truth slot and the guidelines' steer-toward slot (``{target_answer}``);
+    the guidelines refer to "the opposing answer" generically, so no incorrect
+    answer need be named."""
+    template = load_prompt("manipulation_template")
+    guidelines = load_prompt(f"guidelines_{level}")
+    combined = Prompt(
+        name=f"{template.name}+{guidelines.name}",
+        meta={
+            "placeholders": sorted(
+                (template.placeholders - {"guidelines"})
+                | guidelines.placeholders
+            ),
+        },
+        body=template.body.replace("{guidelines}", guidelines.body.strip()),
+    )
+    mode = _framing_mode(calibrated)
+    combined = _inject_fragment(combined, "correct_framing", f"framing_correct_{mode}")
+    combined = _inject_fragment(combined, "target_framing", "framing_target_correct")
+    return _rendered(combined, question=question, correct_answer=correct_answer, target_answer=correct_answer)
+
+
 def build_aligned_system(*, calibrated: bool = False, **values: str) -> RenderedPrompt:
     """Render the aligned baseline system prompt. Needs: question, correct_answer.
     ``calibrated`` only switches the answer-provenance framing fragment (oracle-given
@@ -378,6 +412,13 @@ if __name__ == "__main__":
         ).text
         assert not PLACEHOLDER_RE.search(out), f"unsubstituted token in misaligned/{level}"
         print(f"misaligned/{level:10s}: OK ({len(out)} chars)")
+    # Misaligned-but-correct actor (same template + guidelines, steered toward correct).
+    for level in ("aggressive", "moderate", "subtle"):
+        out = build_misaligned_correct_system(
+            level, **{k: scenario[k] for k in ("question", "correct_answer")}
+        ).text
+        assert not PLACEHOLDER_RE.search(out), f"unsubstituted token in misaligned_correct/{level}"
+        print(f"misaligned_correct/{level:4s}: OK ({len(out)} chars)")
     # Attitudinal misaligned actor (its own template + guideline sets).
     for level in ("aggressive", "moderate", "subtle"):
         out = build_misaligned_attitudinal_system(

@@ -27,7 +27,10 @@ from pathlib import Path
 
 _ROLES = ("actor", "user")
 _EVAL_ROLES = ("judge", "monitor")
-_CONDITIONS = ("aligned", "misaligned")
+# "misaligned_correct" steers toward the CORRECT answer using the same
+# manipulation guidelines as "misaligned" (identical tactics, opposite direction);
+# it sweeps `level` like misaligned and is objective-only (needs a correct answer).
+_CONDITIONS = ("aligned", "misaligned", "misaligned_correct")
 _LEVELS = ("subtle", "moderate", "aggressive")
 # Answer-provenance modes (the `target` knob): "authored" points the actors at the
 # scenario's correct/target answers; "calibrated" points them at the manually
@@ -281,6 +284,11 @@ def load_specs(config_path: str | Path, corpus_path: str | Path) -> list[Episode
     bad = [c for c in conditions if c not in _CONDITIONS]
     if bad:
         raise ValueError(f"config {name!r}: unknown condition(s) {bad}, expected {_CONDITIONS}")
+    if is_attitudinal and "misaligned_correct" in conditions:
+        raise ValueError(
+            f"config {name!r}: condition 'misaligned_correct' is objective-only "
+            f"(attitudinal questions have no correct answer to steer toward)"
+        )
     levels = _as_list(_require(exp, "level", name))
     bad = [lv for lv in levels if lv not in _LEVELS]
     if bad:
