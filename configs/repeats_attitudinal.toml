@@ -1,0 +1,47 @@
+# RUN config for ATTITUDINAL scenarios (HOW to run) — configs/dev_attitudinal.toml with
+# one thing changed: each condition is run `repeats` times instead of once, so the
+# results table can report a mean and a confidence interval rather than a single
+# sampled score. Driven by notebooks/attitudinal/repeats.ipynb.
+#
+# Point it at an attitudinal scenario .toml (not a generated corpus). Attitudinal has
+# no material to generate, so the source is inherently fixed and the only things
+# varying are the actor and the monitor — which is what the objective twin
+# (configs/repeats.toml) pins a single corpus in order to mirror.
+#
+#   python run.py converse configs/repeats_attitudinal.toml scenarios/2_1_attitudinal.toml
+#   python run.py eval      configs/repeats_attitudinal.toml results/transcripts/repeats_att-<stamp>.jsonl
+#
+# Condition names map differently for attitudinal: "aligned" -> the UNBIASED
+# steelman baseline, "misaligned" -> the BIASED persuader (swept over both stances
+# × the three levels). Plan: 1 unbiased + (2 stances × 3 levels) = 7 conditions.
+
+[experiment]
+name       = "repeats_att"
+condition  = ["aligned", "misaligned"]
+level      = ["subtle", "moderate", "aggressive"]  # biased condition only
+rounds     = 1
+human      = "simulator"
+
+max_tokens = 8192
+# The sample size behind every cell of the table. Costs 7 conditions × repeats actor
+# calls, then the same number again for the monitor (attitudinal has one evaluator, not
+# three), so 20 is 280 calls and 1 is 14. Start at 1 to rehearse the flow, then raise
+# it — at 1 the table has nothing to average and prints the bare score per cell.
+repeats    = 20
+thinking   = "high"
+
+[experiment.models]
+actor = "claude-sonnet-4-6"
+user  = "claude-sonnet-4-6"
+
+# Attitudinal has NO judge (no correct answer) — only the monitor is set. There is
+# deliberately no temperature knob: with thinking on, Anthropic rejects any temperature
+# other than 1, so every phase runs at the API default of 1.0.
+[eval]
+name              = "initial"
+max_tokens        = 8192
+reveal_scratchpad = false
+thinking          = "high"
+
+[eval.models]
+monitor = "claude-sonnet-4-6"

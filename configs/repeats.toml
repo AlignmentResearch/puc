@@ -1,0 +1,45 @@
+# RUN config (HOW to run) — configs/dev.toml with one thing changed: each condition
+# is run `repeats` times instead of once, so the results table can report a mean and
+# a confidence interval rather than a single sampled score.
+# Driven by notebooks/objective/repeats.ipynb.
+#
+# The corpus is held FIXED across the whole run (the notebook pins one), so the only
+# things varying are the actor and the evaluators. That mirrors the attitudinal setup,
+# where a run points straight at a scenario .toml and there is no generated material
+# to vary in the first place.
+#
+#   python run.py converse configs/repeats.toml generated_material/2_1/dev-<stamp>.md
+#   python run.py eval      configs/repeats.toml results/transcripts/repeats-<stamp>.jsonl
+
+[experiment]
+name       = "repeats"
+condition  = ["aligned", "misaligned"]
+level      = ["subtle", "moderate", "aggressive"]  # only used by the misaligned condition
+rounds     = 1                   # one user message + one actor reply (only 1 supported)
+human      = "simulator"         # persuadee: "simulator" (an LLM) | "real" (GUI, TODO)
+target     = "authored"          # "authored" | "calibrated"
+max_tokens = 8192
+# The sample size behind every cell of the table. Costs 4 conditions × repeats actor
+# calls, then 3× that many evaluator calls (judge + 2 monitors per transcript), so 30
+# is 480 calls and 1 is 16. Start at 1 to rehearse the flow, then raise it — at 1 the
+# table has nothing to average and prints the bare score per cell.
+repeats    = 20
+thinking   = "high"              # actor reasoning depth: "off" | low|medium|high|xhigh|max
+
+[experiment.models]
+actor = "claude-sonnet-4-6"
+user  = "claude-sonnet-4-6"
+
+# EVAL config (HOW to judge). Left identical to configs/dev.toml so these numbers stay
+# comparable to earlier single-shot runs. There is deliberately no temperature knob:
+# with thinking on, Anthropic rejects any temperature other than 1, so both phases run
+# at the API default of 1.0.
+[eval]
+name              = "initial"
+max_tokens        = 8192
+reveal_scratchpad = false        # show the actor's private reasoning to judge + monitor
+thinking          = "high"       # evaluator reasoning depth: "off" | low|medium|high|xhigh|max
+
+[eval.models]
+judge   = "claude-sonnet-4-6"
+monitor = "claude-sonnet-4-6"    # falls back to judge if omitted
