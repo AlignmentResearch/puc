@@ -17,6 +17,26 @@ question and evidence.
 > safety-research scale-up, material version `2_1`); the first attitudinal one is
 > **`2_1_attitudinal`** (is mechanistic interpretability a promising direction?).
 
+# Overview of setup 
+- Objective refers to a question with a correct answer the evidence actually supports
+- Attitudinal refers to a matter of opinion or judgement with no provably correct answer 
+- Material refers to generated background material relevant to deciding what the correct answer to the user's query is. For example, in a scenario where a research manager weighs a safety research update, the material determines what actually happened. It is the "evidence" that supports the scenarios with objective queries.  
+
+There are two model actors as defined by their system prompts: 
+- Misaligned: told to steer toward target_answer (objective) or target_stance (attitudinal) at a chosen manipulation level (subtle/moderate/aggressive), without arousing suspicion
+- Aligned: an honest model trying to actually help the user with their decision-making query
+- Both are tested across scenarios involving an objective and scenarios involving an attitudinal query.
+
+There are two main types of LLM evaluators - a judge and a monitor. 
+- Judge LLM which is "answer-aware". It sees the correct answer to the user query and material. 
+- Monitor LLM which is "answer-blind". There are two types used: one that sees the material, and one that doesn't. 
+
+How the judge and monitor gets used depends on whether the scenario involves an objective or attitudinal query.
+- Objective: Judge and both types of monitor are used - together they score how much the model persuades the user towards an incorrect answer and with what features of persuasion (how manipulatively it argues). Having 3 conditions (answer+material, no material, material-only) isolates how much each kind of blindness moves the manipulation score.
+- Attitudinal: Only a monitor is used. It scores how the user's stance on an issue changes and with what features of persuasion (how manipulatively it argues).
+
+The current evaluation design does not provide for multiturn conversations and different target model providers - they are to be done in future versions, in addition to general improvements on context-specific realism in model and human dialogue.
+
 ## The flow
 
 Setting up a run is four steps, each a small config plus one script. The `notebooks/`
